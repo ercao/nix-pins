@@ -1,0 +1,447 @@
+{
+  "schemaVersion": 1,
+  "pins": {
+    "agent-browser": {
+      "version": "v0.34.0",
+      "fetcher": {
+        "github": {
+          "owner": "vercel-labs",
+          "repo": "agent-browser",
+          "rev": "v0.34.0"
+        }
+      },
+      "hash": "sha256-UdCBSe7w0ZgJimB7ixGcaabJjH3m6O0vB1SV9n9apfE=",
+      "fingerprints": {
+        "hash": "/nix/store/dv2q7kl649xj82vvby95in06fxpj63r5-source.drv"
+      }
+    },
+    "ast-grep-mcp": {
+      "version": "732c339c3812a44e9111e6c3aefec64894acd58f",
+      "fetcher": {
+        "git": {
+          "rev": "732c339c3812a44e9111e6c3aefec64894acd58f",
+          "url": "https://github.com/ast-grep/ast-grep-mcp.git"
+        }
+      },
+      "hash": "sha256-jsKJRr68MsYUy+3siEag+6WAMXHgGug5xkG0Mq3voas=",
+      "fingerprints": {
+        "hash": "/nix/store/3b8b8ljirw001i9lwpl387xy0mni8frj-ast-grep-mcp-732c339.drv"
+      }
+    },
+    "caveman": {
+      "version": "bin-v1.1.1",
+      "fetcher": {
+        "github": {
+          "owner": "JuliusBrussee",
+          "repo": "caveman",
+          "rev": "bin-v1.1.1"
+        }
+      },
+      "hash": "sha256-N7c5oEV3c5PLWqV8d2RkdmekB4+xWBfrtuDLFYKnrOM=",
+      "fingerprints": {
+        "hash": "/nix/store/7jqyqgi323zb7cb97gp7x54406k5w79r-source.drv"
+      }
+    },
+    "claude-hud": {
+      "version": "v0.8.0",
+      "fetcher": {
+        "github": {
+          "owner": "jarrodwatts",
+          "repo": "claude-hud",
+          "rev": "v0.8.0"
+        }
+      },
+      "hash": "sha256-2Oo5cI8Xq0MgRkDshJ9Ls56n6++975R4+fqNJpF0ZCQ=",
+      "fingerprints": {
+        "hash": "/nix/store/2dr1mjfbii5yk278qsga79w8j0w9gxvf-source.drv"
+      }
+    },
+    "claude-mem": {
+      "version": "v13.15.3",
+      "fetcher": {
+        "github": {
+          "owner": "thedotmack",
+          "repo": "claude-mem",
+          "rev": "v13.15.3"
+        }
+      },
+      "hash": "sha256-e0y1074hfuzl0ebncBbzsUS3Cca9I1aVWN9APAx+4yM=",
+      "fingerprints": {
+        "hash": "/nix/store/fv11d970g8754dzapw23hvjili1agnbg-source.drv"
+      }
+    },
+    "claude-nu": {
+      "version": "c5b83829dc9885f17c6abc29be5873ec6c59a053",
+      "fetcher": {
+        "git": {
+          "rev": "c5b83829dc9885f17c6abc29be5873ec6c59a053",
+          "url": "https://github.com/nushell-prophet/claude-nu.git"
+        }
+      },
+      "hash": "sha256-XPS+rMjs+0xstYmq4gnCobxTwnxrjfT1h+98iaQpubI=",
+      "fingerprints": {
+        "hash": "/nix/store/kvlak5vyy4dnb36wzc2spx09l4nya80a-claude-nu-c5b8382.drv"
+      }
+    },
+    "cli-proxy-api-management-center": {
+      "version": "1.22.6",
+      "fetcher": {
+        "url": {
+          "url": "https://github.com/router-for-me/Cli-Proxy-API-Management-Center/releases/download/v1.22.6/management.html"
+        }
+      },
+      "hash": "sha256-4mQ+CHXgAk5f+d30Vp5MWGEasEVq62+mBl7T5sK3IfQ=",
+      "fingerprints": {
+        "hash": "/nix/store/zqwijrbd12dx3ksg6s77v5l5lpbck456-management.html.drv"
+      }
+    },
+    "context7": {
+      "version": "7d877a46f2d9a30942376c9807c43dbcefc11a3e",
+      "fetcher": {
+        "git": {
+          "rev": "7d877a46f2d9a30942376c9807c43dbcefc11a3e",
+          "url": "https://github.com/upstash/context7.git"
+        }
+      },
+      "hash": "sha256-InRvYfVygcpEuoND0SNEwqtXzSrLsV0aWdDgLCy5jxQ=",
+      "fingerprints": {
+        "hash": "/nix/store/r6ssqp4xhrjis452dabx7lnyrmfihnnk-context7-7d877a4.drv"
+      }
+    },
+    "cpa-manager-plus": {
+      "version": "v1.12.1",
+      "fetcher": {
+        "github": {
+          "owner": "seakee",
+          "repo": "CPA-Manager-Plus",
+          "rev": "v1.12.1"
+        }
+      },
+      "hash": "sha256-tq5F5NgKyahsYOmv5NDF1TMwc5OfTx18aCd2PyrvTNM=",
+      "fingerprints": {
+        "hash": "/nix/store/qcvdnm6f3nikvdi618cwaspm0c2i99kr-source.drv"
+      }
+    },
+    "cpa-usage-keeper": {
+      "version": "1.14.5",
+      "fetcher": {
+        "url": {
+          "url": "https://github.com/Willxup/cpa-usage-keeper/releases/download/v1.14.5/cpa-usage-keeper_v1.14.5_darwin_arm64.tar.gz"
+        }
+      },
+      "hash": "sha256-JJAVqCOurNYyqGLfJUcRhqbCDabdXce066MlCuC8y18=",
+      "fingerprints": {
+        "hash": "/nix/store/sbakh8z0y1p8w4bk2fyjlvf00227wfjm-cpa-usage-keeper_v1.14.5_darwin_arm64.tar.gz.drv"
+      }
+    },
+    "dws": {
+      "version": "1.0.59",
+      "fetcher": {
+        "url": {
+          "url": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.59/dws-darwin-arm64.tar.gz"
+        }
+      },
+      "hash": "sha256-YRNaKpKGIEzgYIR+ZTxjwel4Sg+mMbt+BWO5Bih2KjU=",
+      "fingerprints": {
+        "hash": "/nix/store/vbclzq9gvp6ivqf00j6ig5wgbdd2pzc1-dws-darwin-arm64.tar.gz.drv"
+      }
+    },
+    "git-aliases.nu": {
+      "version": "109cc6159fb2ff040aadb256971170b164ed1fc2",
+      "fetcher": {
+        "git": {
+          "rev": "109cc6159fb2ff040aadb256971170b164ed1fc2",
+          "url": "https://github.com/KamilKleina/git-aliases.nu.git"
+        }
+      },
+      "hash": "sha256-YbT5JMM1xzR4Vc8s8Z998d53mPdKfPDNDypglLHso5E=",
+      "fingerprints": {
+        "hash": "/nix/store/x5bgyb27vn2sacylpp00w24jgi6rav1q-git-aliases.nu-109cc61.drv"
+      }
+    },
+    "git-surgeon": {
+      "version": "798e80e1410d5927ec84c84a7d4124c405ce6c8e",
+      "fetcher": {
+        "git": {
+          "rev": "798e80e1410d5927ec84c84a7d4124c405ce6c8e",
+          "url": "https://github.com/raine/git-surgeon"
+        }
+      },
+      "hash": "sha256-L0i/VJ3yKrA+i51ywqMhgWqSijDU8UbgiB+vE7iTfs8=",
+      "fingerprints": {
+        "hash": "/nix/store/xmrly540akb5gl73378ghxhgkzr7r6qy-git-surgeon-798e80e.drv"
+      }
+    },
+    "git.nu": {
+      "version": "2241050a8ea960a6f20f5577234468c17c785dd8",
+      "fetcher": {
+        "git": {
+          "rev": "2241050a8ea960a6f20f5577234468c17c785dd8",
+          "url": "https://github.com/fj0r/git.nu.git"
+        }
+      },
+      "hash": "sha256-1XznUQG9Q75uXT8cB6hjL8siklsQsOhQeuy+uF8AAFM=",
+      "fingerprints": {
+        "hash": "/nix/store/gvn8n58vcsc426dwg6wqs7rqsf0zd34z-git.nu-2241050.drv"
+      }
+    },
+    "gitnexus": {
+      "version": "v1.6.9",
+      "fetcher": {
+        "github": {
+          "owner": "abhigyanpatwari",
+          "repo": "GitNexus",
+          "rev": "v1.6.9"
+        }
+      },
+      "hash": "sha256-lLO5+b/LqVDtOuJwqc4d6SmAtmKVfoHe7tXsYHRWrOw=",
+      "fingerprints": {
+        "hash": "/nix/store/vy5rn2cg5hl4fvky30y3n0gwlg3zzbx5-source.drv"
+      }
+    },
+    "headroom": {
+      "version": "v0.36.0",
+      "fetcher": {
+        "github": {
+          "owner": "chopratejas",
+          "repo": "headroom",
+          "rev": "v0.36.0"
+        }
+      },
+      "hash": "sha256-0sMu0EDCY+pd38nBBXTNDUUfE8Nx6lvUP46I403yMz8=",
+      "fingerprints": {
+        "hash": "/nix/store/597zlyd4dfsmb6q8ix2yyxk1la2ry8c6-source.drv"
+      }
+    },
+    "herdr": {
+      "version": "v0.8.2",
+      "fetcher": {
+        "github": {
+          "owner": "ogulcancelik",
+          "repo": "herdr",
+          "rev": "v0.8.2"
+        }
+      },
+      "hash": "sha256-sEGIN3dLZasaHob3EHscWBCIQHflMQVchYmzgsETDk4=",
+      "fingerprints": {
+        "hash": "/nix/store/6lkxr2dplnwcqpyks7gc57z372g1mzl2-source.drv"
+      }
+    },
+    "hindsight": {
+      "version": "v0.9.1",
+      "fetcher": {
+        "github": {
+          "owner": "vectorize-io",
+          "repo": "hindsight",
+          "rev": "v0.9.1"
+        }
+      },
+      "hash": "sha256-MjsWNIOPvTBf6q/fhMJquomIM6Vvyik7T2Pnn9P+qLw=",
+      "fingerprints": {
+        "hash": "/nix/store/zrcrzga26fp7ahiq3xcg5j4964fganb2-source.drv"
+      }
+    },
+    "impeccable": {
+      "version": "skill-v4.1.1",
+      "fetcher": {
+        "github": {
+          "owner": "pbakaus",
+          "repo": "impeccable",
+          "rev": "skill-v4.1.1"
+        }
+      },
+      "hash": "sha256-D9mhJT8AsKgwz4FSZwpmryXbQA2VrfQ7HSEjvb4dm+4=",
+      "fingerprints": {
+        "hash": "/nix/store/wd62p3dm87z20cyd8l7yyvfali6i2fmq-source.drv"
+      }
+    },
+    "ios_rule_script": {
+      "version": "ca20cf00887b50ec63de019317bec2a672c93ca9",
+      "fetcher": {
+        "git": {
+          "rev": "ca20cf00887b50ec63de019317bec2a672c93ca9",
+          "url": "https://github.com/blackmatrix7/ios_rule_script.git"
+        }
+      },
+      "hash": "sha256-fib5I2FGOHBGktUkl+c5WLeHCI+Pxys5dLgj7vAqMz0=",
+      "fingerprints": {
+        "hash": "/nix/store/cz48q6i5j2xhazbirdvdzz7k0kk7f5sa-ios_rule_script-ca20cf0.drv"
+      }
+    },
+    "last30days": {
+      "version": "v3.21.1",
+      "fetcher": {
+        "github": {
+          "owner": "mvanhorn",
+          "repo": "last30days-skill",
+          "rev": "v3.21.1"
+        }
+      },
+      "hash": "sha256-XI9SLHEqctd5NkMTjAkczskxiTrBCDSbVfmuXbJEQ20=",
+      "fingerprints": {
+        "hash": "/nix/store/s346p0i2xb3qi4jlislxnpwinajcjrvz-source.drv"
+      }
+    },
+    "lean-ctx": {
+      "version": "v3.9.19",
+      "fetcher": {
+        "github": {
+          "owner": "yvgude",
+          "repo": "lean-ctx",
+          "rev": "v3.9.19"
+        }
+      },
+      "hash": "sha256-vdhtHktPrsQ/eO3OR+iXhWIXpBYzGOLdjU5WG33f9HQ=",
+      "fingerprints": {
+        "hash": "/nix/store/ndyzcz29w4j5f27gcxr9mifin4dxyvs1-source.drv"
+      }
+    },
+    "mattpocock-skills": {
+      "version": "885e2ca4d842d139e9aef4e48d366c63cb1b8013",
+      "fetcher": {
+        "git": {
+          "rev": "885e2ca4d842d139e9aef4e48d366c63cb1b8013",
+          "url": "https://github.com/mattpocock/skills.git"
+        }
+      },
+      "hash": "sha256-BAhmwFuEZPKsnSCwZ9NzPG5b7alCXa2/f/LXSMuJX7o=",
+      "fingerprints": {
+        "hash": "/nix/store/94pixxj4jcdmjj1sxyicgb4xbmpmni6i-skills-885e2ca.drv"
+      }
+    },
+    "mattpocock-skills-zh": {
+      "version": "v1.2.3",
+      "fetcher": {
+        "github": {
+          "owner": "devcxl",
+          "repo": "mattpocock-skills-zh",
+          "rev": "v1.2.3"
+        }
+      },
+      "hash": "sha256-h0iPpn+wpbtV4qsSygMQFi7fU/zAHWteCm1F1MdpiDw=",
+      "fingerprints": {
+        "hash": "/nix/store/5vdd8c0s4pmci625xqfklsc8fyz58j6f-source.drv"
+      }
+    },
+    "metacubexd": {
+      "version": "3e668fe65b8100f8970553ac59d0a88c8de68e21",
+      "fetcher": {
+        "git": {
+          "rev": "3e668fe65b8100f8970553ac59d0a88c8de68e21",
+          "url": "https://github.com/MetaCubeX/metacubexd.git"
+        }
+      },
+      "hash": "sha256-SaargdQJVxG4tQnDcuFFKQmHfnRe03ZOSGOC89ucRXM=",
+      "fingerprints": {
+        "hash": "/nix/store/vf3yql4mjz5yf6j0ss2q1xidqiw0wsdm-metacubexd-3e668fe.drv"
+      }
+    },
+    "mgrep": {
+      "version": "v0.1.13",
+      "fetcher": {
+        "github": {
+          "owner": "mixedbread-ai",
+          "repo": "mgrep",
+          "rev": "v0.1.13"
+        }
+      },
+      "hash": "sha256-uLAK4Mf0ghJmm6dHxooVuvMrZ16K9XZtedF5Cr/2DiM=",
+      "fingerprints": {
+        "hash": "/nix/store/1kq4xday8np6mwvjqpxrwwq2ly06cw94-source.drv"
+      }
+    },
+    "mihomo": {
+      "version": "1.19.30",
+      "fetcher": {
+        "url": {
+          "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-darwin-arm64-v1.19.30.gz"
+        }
+      },
+      "hash": "sha256-LH86eQT6HO4pHhJBI+Yw57Hr0Tdl3ZvybAooQyAE2fQ=",
+      "fingerprints": {
+        "hash": "/nix/store/ipg6r24aqh8ydpsdy069abzkdyz5ki3f-mihomo-darwin-arm64-v1.19.30.gz.drv"
+      }
+    },
+    "models.dev": {
+      "version": "b6f133f18a9b3600980dbf1b0fa4c680bc298f62",
+      "fetcher": {
+        "git": {
+          "rev": "b6f133f18a9b3600980dbf1b0fa4c680bc298f62",
+          "url": "https://github.com/anomalyco/models.dev.git"
+        }
+      },
+      "hash": "sha256-RuSS92Kcv0xNB5Vy2W7BFXr+zJqrciXqt27Phfg7QQY=",
+      "fingerprints": {
+        "hash": "/nix/store/cp434m01ig2lhg0m568waziic009qr8a-models.dev-b6f133f.drv"
+      }
+    },
+    "opencodex": {
+      "version": "v2.28.0",
+      "fetcher": {
+        "github": {
+          "owner": "lidge-jun",
+          "repo": "opencodex",
+          "rev": "v2.28.0"
+        }
+      },
+      "hash": "sha256-eavd3GaljgkQs/9imLCqZlQzEE4Rii/5AHHyWwI5huM=",
+      "fingerprints": {
+        "hash": "/nix/store/fm3fxxhm1p60n0alp8cscgxgkygh09v0-source.drv"
+      }
+    },
+    "ponytail": {
+      "version": "v4.9.0",
+      "fetcher": {
+        "github": {
+          "owner": "DietrichGebert",
+          "repo": "ponytail",
+          "rev": "v4.9.0"
+        }
+      },
+      "hash": "sha256-8cYggVltBAlZ/Zj4pl1bOu7mQdZFXCmDGW4RSpvRA+w=",
+      "fingerprints": {
+        "hash": "/nix/store/qh3d9qnpczw3i8ihjw20g5cv32m21kn4-source.drv"
+      }
+    },
+    "schemastore": {
+      "version": "062b5bc5e070965cf6c4c12548ccd6c6bd1e63a2",
+      "fetcher": {
+        "url": {
+          "url": "https://raw.githubusercontent.com/SchemaStore/schemastore/062b5bc5e070965cf6c4c12548ccd6c6bd1e63a2/src/api/json/catalog.json"
+        }
+      },
+      "hash": "sha256-lFm0el/nUIgwS+SaJoEgZpBiWqblXFtDyOz5hitFZMU=",
+      "fingerprints": {
+        "hash": "/nix/store/nqancp04y6wxnlgbrrf8s7nz3ycl4g3n-catalog.json.drv"
+      }
+    },
+    "superpowers": {
+      "version": "v6.3.0",
+      "fetcher": {
+        "github": {
+          "owner": "obra",
+          "repo": "superpowers",
+          "rev": "v6.3.0"
+        }
+      },
+      "hash": "sha256-EsGNO0dULWf5Bx6bGrCv2kI2Z8aKH0kRvGiuN23wChQ=",
+      "fingerprints": {
+        "hash": "/nix/store/n94i6vs5g3n5fzl9yvpcgmjb8g2711ya-source.drv"
+      }
+    },
+    "superpowers-zh": {
+      "version": "v1.7.1",
+      "fetcher": {
+        "github": {
+          "owner": "jnMetaCode",
+          "repo": "superpowers-zh",
+          "rev": "v1.7.1"
+        }
+      },
+      "hash": "sha256-KB81yn63UCg/CTfrkdN1LMQnAI2Q+9jB5iAmyVbTtJs=",
+      "fingerprints": {
+        "hash": "/nix/store/0rvnhz5x5x8c2p1kks37wjmg12qyq7p7-source.drv"
+      }
+    }
+  }
+}
