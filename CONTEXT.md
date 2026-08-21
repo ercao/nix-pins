@@ -28,6 +28,18 @@ _Avoid_：extra hash, secondary hash, build hash
 工具输出的 JSON 锁文件，记录每个 Pin 的版本、fetcher 参数与全部哈希。
 _Avoid_：lockfile, generated.json, manifest
 
+**Update**：
+解析并锁定选中的 Pin，随后写入 Pins File 的命令；它是 CLI 的写操作。
+_Avoid_：refresh, sync, generate
+
+**Status**：
+只读报告当前 Pin 与上次失败状态的命令；未指定子命令时默认执行 Status。
+_Avoid_：check, inspect, list
+
+**Selection**：
+一次命令要处理的 Pin 集合；显式名称与 `--filter` 正则取并集，两者都为空时表示全部 Pin。
+_Avoid_：scope, targets, matcher
+
 **Reader**：
 随工具分发的薄 Nix 表达式，把 Pins File 转换为可用的 `src` 与哈希属性。
 _Avoid_：generated.nix, bridge, shim

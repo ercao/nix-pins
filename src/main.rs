@@ -3,12 +3,13 @@
 //! 子命令仅 update 与 status（ADR-0009）。
 
 mod checker;
+mod cli;
 mod nix;
 mod pins;
 mod probe;
 mod progress;
 
-use regex::Regex;
+use cli::{Command, Selection};
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -44,50 +45,14 @@ struct UpdateResult {
     failures: BTreeMap<String, String>,
 }
 
-struct Selection {
-    names: Vec<String>,
-    filter: Option<Regex>,
-}
-
 fn main() -> ExitCode {
-    let (cmd, selection) = match parse_args() {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            eprintln!("nix-pins: {error}");
-            return ExitCode::from(2);
-        }
-    };
+    let command = cli::parse();
     let config = PathBuf::from(DEFAULT_CONFIG);
     let pins_path = PathBuf::from(DEFAULT_PINS);
-
-    match cmd.as_str() {
-        "update" => run_update(&config, &pins_path, &selection),
-        "status" => run_status(&config, &pins_path, &selection),
-        other => {
-            eprintln!("nix-pins: unknown subcommand {other} (expected update or status)");
-            ExitCode::from(2)
-        }
+    match command {
+        Command::Update(selection) => run_update(&config, &pins_path, &selection),
+        Command::Status(selection) => run_status(&config, &pins_path, &selection),
     }
-}
-
-fn parse_args() -> Result<(String, Selection), String> {
-    let mut args = std::env::args().skip(1);
-    let command = args.next().unwrap_or_else(|| "status".into());
-    let mut names = Vec::new();
-    let mut filter = None;
-    while let Some(argument) = args.next() {
-        match argument.as_str() {
-            "--filter" => {
-                let pattern = args.next().ok_or("--filter needs a regex")?;
-                filter = Some(Regex::new(&pattern).map_err(|error| error.to_string())?);
-            }
-            option if option.starts_with('-') => {
-                return Err(format!("unknown option {option}"));
-            }
-            name => names.push(name.to_string()),
-        }
-    }
-    Ok((command, Selection { names, filter }))
 }
 
 /// 部分失败保留旧条目，以非零退出码结束（ADR-0007）。
@@ -270,17 +235,6 @@ fn update(
         processed,
         failures,
     })
-}
-
-impl Selection {
-    fn matches(&self, name: &str) -> bool {
-        (self.names.is_empty() && self.filter.is_none())
-            || self.names.iter().any(|selected| selected == name)
-            || self
-                .filter
-                .as_ref()
-                .is_some_and(|filter| filter.is_match(name))
-    }
 }
 
 fn run_sources(

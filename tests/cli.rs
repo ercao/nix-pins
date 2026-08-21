@@ -846,3 +846,27 @@ esac
     assert!(pins["pins"].get("alpha").is_some());
     assert!(pins["pins"].get("beta").is_none());
 }
+
+#[test]
+fn clap_help_version_and_errors_use_standard_exit_codes() {
+    let dir = TempDir::new("clap");
+
+    let help = run(&dir.0, &["--help"]);
+    assert!(
+        help.status.success(),
+        "{}",
+        String::from_utf8_lossy(&help.stderr)
+    );
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains("Usage:"), "{help}");
+    assert!(help.contains("update"), "{help}");
+    assert!(help.contains("status"), "{help}");
+
+    let version = run(&dir.0, &["--version"]);
+    assert!(version.status.success());
+    assert!(String::from_utf8_lossy(&version.stdout).contains("nix-pins 0.1.0"));
+
+    let error = run(&dir.0, &["update", "--unknown"]);
+    assert_eq!(error.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&error.stderr).contains("--unknown"));
+}

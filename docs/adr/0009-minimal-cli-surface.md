@@ -1,6 +1,6 @@
 # CLI 只提供 update 与 status 两个子命令，按名字而非正则过滤
 
-实测迁移目标 `macos-config/pkgs/_sources/generated.json` 有 33 个 Pin 且无一使用 Derived Hash，说明当下的主要动作是批量刷新版本。CLI 因此保持最小：`update` 写入 Pins File，`status` 只读报告（`--refresh` 可联网查最新版本）。过滤以位置参数接受 Pin 名字（`nix-pins update foo bar`），正则退居 `--filter`。
+实测迁移目标 `macos-config/pkgs/_sources/generated.json` 有 33 个 Pin 且无一使用 Derived Hash，说明当下的主要动作是批量刷新版本。CLI 因此保持最小：`update` 写入 Pins File，`status` 只读报告。过滤以位置参数接受 Pin 名字（`nix-pins update foo bar`），正则退居 `--filter`。联网刷新状态的 `status --refresh` 延期，当前不属于 CLI 契约。
 
 ## Considered Options
 
