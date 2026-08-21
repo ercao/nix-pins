@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "pins": {
+    "cpa-manager-plus": {
+      "version": "v1.12.1",
+      "fetcher": {
+        "github": {
+          "owner": "seakee",
+          "repo": "CPA-Manager-Plus",
+          "rev": "v1.12.1"
+        }
+      },
+      "hash": "sha256-tq5F5NgKyahsYOmv5NDF1TMwc5OfTx18aCd2PyrvTNM=",
+      "derived": {
+        "npmDepsHash": "sha256-JxY+dC/fpNpEe8lH2UwgjJbX6HVdgjaURvrQbxPfeDc=",
+        "vendorHash": "sha256-OhtGqAXPPbTIqGB9VvQ5UTgCNt7fw2yNKkEIgWhGuiM="
+      },
+      "fingerprints": {
+        "hash": "/nix/store/qcvdnm6f3nikvdi618cwaspm0c2i99kr-source.drv",
+        "npmDepsHash": "/nix/store/b82c15xfknkkw0gq6b2m0rglchkz9878-cpa-manager-plus-web-v1.12.1-npm-deps.drv",
+        "vendorHash": "/nix/store/dwb01an9z9z1gvnkap5p5rbldib801h0-cpa-manager-plus-manager-server-v1.12.1-go-modules.drv"
+      }
+    }
+  }
+}

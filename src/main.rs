@@ -17,11 +17,25 @@ use std::sync::{mpsc, Arc, Mutex};
 const DEFAULT_CONFIG: &str = "./pins-config.nix";
 const DEFAULT_PINS: &str = "./pins.json";
 
-struct HashTask {
+struct SourceTask {
     name: String,
     version: String,
     probe: Option<probe::ProbeResult>,
     previous: Option<pins::Pin>,
+}
+
+struct SourceResult {
+    version: String,
+    fetcher: pins::Fetcher,
+    hash: String,
+    fingerprint: String,
+    previous: Option<pins::Pin>,
+}
+
+struct DerivedTask {
+    name: String,
+    source: SourceResult,
+    probe: Option<probe::ProbeResult>,
 }
 
 struct Selection {
@@ -143,26 +157,73 @@ fn update(
         }
     }
     if !versions.is_empty() {
-        match probe::probe_drvs(&config.display().to_string(), &versions) {
-            Ok(mut probe_results) => {
-                let recalculations = count_recalculations(&pins, &probe_results);
-                eprintln!("{recalculations} hashes need recalculation");
+        let config = config.display().to_string();
+        match probe::probe_drvs(&config, &versions, &BTreeMap::new()) {
+            Ok(mut source_probes) => {
+                let source_recalculations = count_source_recalculations(&pins, &source_probes);
                 let tasks = versions
                     .into_iter()
-                    .map(|(name, version)| HashTask {
+                    .map(|(name, version)| SourceTask {
                         previous: pins.pins.get(&name).cloned(),
-                        probe: probe_results.remove(&name),
+                        probe: source_probes.remove(&name),
                         name,
                         version,
                     })
                     .collect();
-                for (name, result) in run_hashes(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1)) {
+                let mut sources = BTreeMap::new();
+                for (name, result) in run_sources(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1)) {
                     match result {
-                        Ok(pin) => {
-                            pins.pins.insert(name, pin);
+                        Ok(source) => {
+                            sources.insert(name, source);
                         }
                         Err(error) => {
                             failures.insert(name, error);
+                        }
+                    }
+                }
+
+                if sources.is_empty() {
+                    eprintln!("{source_recalculations} hashes need recalculation");
+                } else {
+                    let successful_versions = sources
+                        .iter()
+                        .map(|(name, source)| (name.clone(), source.version.clone()))
+                        .collect();
+                    let source_hashes = sources
+                        .iter()
+                        .map(|(name, source)| (name.clone(), source.hash.clone()))
+                        .collect();
+                    match probe::probe_drvs(&config, &successful_versions, &source_hashes) {
+                        Ok(mut derived_probes) => {
+                            let recalculations = source_recalculations
+                                + count_derived_recalculations(&pins, &derived_probes);
+                            eprintln!("{recalculations} hashes need recalculation");
+                            let tasks = sources
+                                .into_iter()
+                                .map(|(name, source)| DerivedTask {
+                                    probe: derived_probes.remove(&name),
+                                    name,
+                                    source,
+                                })
+                                .collect();
+                            for (name, result) in
+                                run_derived(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1))
+                            {
+                                match result {
+                                    Ok(pin) => {
+                                        pins.pins.insert(name, pin);
+                                    }
+                                    Err(error) => {
+                                        failures.insert(name, error);
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            let error = nix_error(error);
+                            for name in sources.into_keys() {
+                                failures.insert(name, error.clone());
+                            }
                         }
                     }
                 }
@@ -192,15 +253,18 @@ impl Selection {
     }
 }
 
-fn run_hashes(tasks: Vec<HashTask>, jobs: usize) -> BTreeMap<String, Result<pins::Pin, String>> {
+fn run_sources(
+    tasks: Vec<SourceTask>,
+    jobs: usize,
+) -> BTreeMap<String, Result<SourceResult, String>> {
     parallel_map(
         tasks.into_iter().map(|task| (task.name.clone(), task)),
         jobs,
-        resolve_hashes,
+        resolve_source,
     )
 }
 
-fn resolve_hashes(task: HashTask) -> Result<pins::Pin, String> {
+fn resolve_source(task: SourceTask) -> Result<SourceResult, String> {
     let probe = task
         .probe
         .ok_or_else(|| format!("Probe did not return {}", task.name))?;
@@ -213,10 +277,35 @@ fn resolve_hashes(task: HashTask) -> Result<pins::Pin, String> {
             eprintln!("hashing {}: src", task.name);
             nix::resolve_hash(&probe.src).map_err(nix_error)
         })?;
+    Ok(SourceResult {
+        version: task.version,
+        fetcher: probe.fetcher,
+        hash,
+        fingerprint: probe.src,
+        previous: task.previous,
+    })
+}
+
+fn run_derived(
+    tasks: Vec<DerivedTask>,
+    jobs: usize,
+) -> BTreeMap<String, Result<pins::Pin, String>> {
+    parallel_map(
+        tasks.into_iter().map(|task| (task.name.clone(), task)),
+        jobs,
+        resolve_derived,
+    )
+}
+
+fn resolve_derived(task: DerivedTask) -> Result<pins::Pin, String> {
+    let probe = task
+        .probe
+        .ok_or_else(|| format!("Probe did not return {}", task.name))?;
     let mut derived = BTreeMap::new();
-    let mut fingerprints = BTreeMap::from([("hash".into(), probe.src)]);
+    let mut fingerprints = BTreeMap::from([("hash".into(), task.source.fingerprint)]);
     for (key, drv_path) in probe.derived {
         let value = task
+            .source
             .previous
             .as_ref()
             .filter(|pin| pin.fingerprints.get(&key) == Some(&drv_path))
@@ -231,9 +320,9 @@ fn resolve_hashes(task: HashTask) -> Result<pins::Pin, String> {
         fingerprints.insert(key, drv_path);
     }
     Ok(pins::Pin {
-        version: task.version,
-        fetcher: probe.fetcher,
-        hash,
+        version: task.source.version,
+        fetcher: task.source.fetcher,
+        hash: task.source.hash,
         derived,
         fingerprints,
     })
@@ -285,7 +374,7 @@ where
     results
 }
 
-fn count_recalculations(
+fn count_source_recalculations(
     pins: &pins::PinsFile,
     probe_results: &BTreeMap<String, probe::ProbeResult>,
 ) -> usize {
@@ -294,13 +383,25 @@ fn count_recalculations(
         .map(|(name, probe)| {
             let previous = pins.pins.get(name);
             usize::from(previous.and_then(|pin| pin.fingerprints.get("hash")) != Some(&probe.src))
-                + probe
-                    .derived
-                    .iter()
-                    .filter(|(key, fingerprint)| {
-                        previous.and_then(|pin| pin.fingerprints.get(*key)) != Some(*fingerprint)
-                    })
-                    .count()
+        })
+        .sum()
+}
+
+fn count_derived_recalculations(
+    pins: &pins::PinsFile,
+    probe_results: &BTreeMap<String, probe::ProbeResult>,
+) -> usize {
+    probe_results
+        .iter()
+        .map(|(name, probe)| {
+            let previous = pins.pins.get(name);
+            probe
+                .derived
+                .iter()
+                .filter(|(key, fingerprint)| {
+                    previous.and_then(|pin| pin.fingerprints.get(*key)) != Some(*fingerprint)
+                })
+                .count()
         })
         .sum()
 }

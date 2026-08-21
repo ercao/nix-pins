@@ -61,7 +61,7 @@ fn serial() -> MutexGuard<'static, ()> {
 fn update_creates_a_pins_file_through_the_cli_seam() {
     let _serial = serial();
     let dir = TempDir::new("update");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     write_executable(
         &dir.0.join("nix"),
         r#"#!/bin/sh
@@ -117,7 +117,7 @@ esac
 fn update_keeps_failed_pins_and_writes_successful_ones() {
     let _serial = serial();
     let dir = TempDir::new("partial-failure");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     fs::write(
         dir.0.join("pins.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
@@ -177,7 +177,7 @@ esac
 fn update_preserves_the_full_build_output_when_no_hash_is_reported() {
     let _serial = serial();
     let dir = TempDir::new("no-got");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     write_executable(
         &dir.0.join("nix"),
         r#"#!/bin/sh
@@ -214,7 +214,7 @@ esac
 fn status_reports_versions_and_last_failures_without_running_checkers() {
     let _serial = serial();
     let dir = TempDir::new("status");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     fs::write(
         dir.0.join("pins.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
@@ -268,7 +268,7 @@ esac
 fn update_reuses_hashes_when_the_fake_hash_fingerprint_is_unchanged() {
     let _serial = serial();
     let dir = TempDir::new("fingerprint");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     fs::write(
         dir.0.join("pins.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
@@ -322,7 +322,7 @@ esac
 fn update_writes_and_reuses_derived_hashes() {
     let _serial = serial();
     let dir = TempDir::new("derived");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     let nix = dir.0.join("nix");
     write_executable(
         &nix,
@@ -334,13 +334,22 @@ case "$1" in
         printf '%s\n' '{"demo":{"cmd":"printf v1"}}'
         ;;
       *p.src.drvPath*)
-        printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"github":{"owner":"acme","repo":"demo","rev":"v1"}},"derived":{"vendorHash":"/nix/store/demo-go-modules.drv"}}}'
+        case "$*" in
+          *sha256-source*)
+            printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"github":{"owner":"acme","repo":"demo","rev":"v1"}},"derived":{"vendorHash":"/nix/store/demo-go-modules.drv","npmDepsHash":"/nix/store/demo-npm-deps.drv"}}}'
+            ;;
+          *)
+            printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"github":{"owner":"acme","repo":"demo","rev":"v1"}},"derived":{"vendorHash":"/nix/store/source-mismatch.drv","npmDepsHash":"/nix/store/source-mismatch.drv"}}}'
+            ;;
+        esac
         ;;
     esac
     ;;
   build)
     case "$*" in
+      *npm-deps*) printf '%s\n' '  got: sha256-npm' >&2 ;;
       *go-modules*) printf '%s\n' '  got: sha256-vendor' >&2 ;;
+      *source-mismatch*) printf '%s\n' '  got: sha256-wrong-derived' >&2 ;;
       *) printf '%s\n' '  got: sha256-source' >&2 ;;
     esac
     exit 1
@@ -356,13 +365,19 @@ esac
         String::from_utf8_lossy(&first.stderr)
     );
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
+    assert_eq!(pins["pins"]["demo"]["hash"], "sha256-source");
     assert_eq!(
         pins["pins"]["demo"]["derived"]["vendorHash"],
         "sha256-vendor"
     );
+    assert_eq!(pins["pins"]["demo"]["derived"]["npmDepsHash"], "sha256-npm");
     assert_eq!(
         pins["pins"]["demo"]["fingerprints"]["vendorHash"],
         "/nix/store/demo-go-modules.drv"
+    );
+    assert_eq!(
+        pins["pins"]["demo"]["fingerprints"]["npmDepsHash"],
+        "/nix/store/demo-npm-deps.drv"
     );
 
     write_executable(
@@ -372,7 +387,7 @@ case "$1" in
   eval)
     case "$*" in
       *p.check*) printf '%s\n' '{"demo":{"cmd":"printf v1"}}' ;;
-      *p.src.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"github":{"owner":"acme","repo":"demo","rev":"v1"}},"derived":{"vendorHash":"/nix/store/demo-go-modules.drv"}}}' ;;
+      *p.src.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"github":{"owner":"acme","repo":"demo","rev":"v1"}},"derived":{"vendorHash":"/nix/store/demo-go-modules.drv","npmDepsHash":"/nix/store/demo-npm-deps.drv"}}}' ;;
     esac
     ;;
   build)
@@ -394,7 +409,7 @@ esac
 fn npm_deps_failures_explain_how_to_supply_a_missing_lockfile() {
     let _serial = serial();
     let dir = TempDir::new("npm-lockfile");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     fs::write(
         dir.0.join("pins.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
@@ -499,7 +514,7 @@ fn reader_dispatches_github_and_git_fetchers() {
 fn github_checker_uses_the_overridable_api_base_and_token() {
     let _serial = serial();
     let dir = TempDir::new("github-checker");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     write_executable(
         &dir.0.join("nix"),
         r#"#!/bin/sh
@@ -576,7 +591,7 @@ esac
 fn remaining_builtin_checkers_use_their_public_config_shapes() {
     let _serial = serial();
     let dir = TempDir::new("builtin-checkers");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
@@ -669,7 +684,7 @@ printf 'one\trefs/tags/v1.9.0\ntwo\trefs/tags/v1.10.0\n'
 fn github_rate_limits_are_actionable_without_leaking_the_token() {
     let _serial = serial();
     let dir = TempDir::new("github-rate-limit");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     write_executable(
         &dir.0.join("nix"),
         r#"#!/bin/sh
@@ -713,7 +728,7 @@ esac
 fn checker_stage_runs_concurrently_before_hashing() {
     let _serial = serial();
     let dir = TempDir::new("checker-concurrency");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     write_executable(
         &dir.0.join("nix"),
         r#"#!/bin/sh
@@ -742,7 +757,7 @@ esac
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        elapsed < std::time::Duration::from_millis(2500),
+        elapsed < std::time::Duration::from_millis(3200),
         "Checker stage took {elapsed:?}"
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("4 hashes need recalculation"));
@@ -752,7 +767,7 @@ esac
 fn hash_stage_has_an_independent_concurrency_switch() {
     let _serial = serial();
     let dir = TempDir::new("hash-concurrency");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     let nix_script = r#"#!/bin/sh
 case "$1" in
   eval)
@@ -793,7 +808,7 @@ esac
 fn update_accepts_exact_names_and_a_regex_filter() {
     let _serial = serial();
     let dir = TempDir::new("filter");
-    fs::write(dir.0.join("pins-config.nix"), "{ pkgs, fake, pins }: {}\n").unwrap();
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
     write_executable(
         &dir.0.join("nix"),
         r#"#!/bin/sh

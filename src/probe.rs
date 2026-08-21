@@ -1,7 +1,7 @@
-//! 对用户 Nix 配置的两阶段求值（ADR-0013、ADR-0015）。
+//! 通过声明式 evaluator 对用户 Nix 配置进行两阶段求值（ADR-0015、ADR-0016）。
 //!
-//! 阶段一只读 check，此时 pins 可为空 —— Nix 的惰性保证 src 中对
-//! pins.<name>.version 的引用不被求值。阶段二注入版本后读 drvPath。
+//! 阶段一以空锁定集只读 check；阶段二由工具注入版本和已知 source hash，
+//! 读取 Fetcher、source 与各中间 FOD 的 drvPath。
 
 use crate::checker::Checker;
 use crate::nix::{self, FAKE};
@@ -19,23 +19,33 @@ pub struct ProbeResult {
 /// 阶段一：列出各 Pin 的 checker 声明。pins 传空集。
 pub fn probe_checks(config: &str) -> Result<BTreeMap<String, Checker>, nix::Error> {
     let config = config_path(config)?;
+    let evaluator = evaluator_path()?;
     let expr = format!(
-        "let cfg = import {config} {{ pkgs = import <nixpkgs> {{}}; fake = \"{FAKE}\"; pins = {{}}; }}; \
+        "let pkgs = import <nixpkgs> {{}}; \
+             cfg = import {evaluator} {{ inherit pkgs; config = {config}; pins = {{}}; }}; \
          in builtins.mapAttrs (n: p: p.check) cfg"
     );
     let value = nix::eval_json(&expr)?;
     serde_json::from_value(value).map_err(|error| nix::Error::Nix(error.to_string()))
 }
 
-/// 阶段二：注入已知版本，取出 src、Fetcher 与各中间 FOD 的 drvPath。
+/// 阶段二：注入已知版本和 source hash，取出 Fetcher 与各 FOD 的 drvPath。
 pub fn probe_drvs(
     config: &str,
     versions: &BTreeMap<String, String>,
+    hashes: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, ProbeResult>, nix::Error> {
     let config = config_path(config)?;
+    let evaluator = evaluator_path()?;
     let pins: BTreeMap<_, _> = versions
         .iter()
-        .map(|(name, version)| (name, serde_json::json!({ "version": version })))
+        .map(|(name, version)| {
+            let mut pin = serde_json::json!({ "version": version });
+            if let Some(hash) = hashes.get(name) {
+                pin["hash"] = serde_json::Value::String(hash.clone());
+            }
+            (name, pin)
+        })
         .collect();
     let pins_json =
         serde_json::to_string(&pins).map_err(|error| nix::Error::Nix(error.to_string()))?;
@@ -44,18 +54,10 @@ pub fn probe_drvs(
     let expr = format!(
         "let pkgs = import <nixpkgs> {{}}; \
              pins = builtins.fromJSON {pins_nix}; \
-             all = import {config} {{ inherit pkgs pins; fake = \"{FAKE}\"; }}; \
+             all = import {evaluator} {{ inherit pkgs pins; config = {config}; fake = \"{FAKE}\"; }}; \
              cfg = builtins.listToAttrs (map (name: {{ inherit name; value = all.${{name}}; }}) (builtins.attrNames pins)); \
          in builtins.mapAttrs (n: p: \
-             let d = if p ? derive then p.derive p.src else null; in {{ \
-               src = p.src.drvPath; \
-               fetcher = if p.src ? owner && p.src ? repo then {{ github = {{ inherit (p.src) owner repo rev; }}; }} \
-                 else if p.src ? rev then {{ git = {{ inherit (p.src) url rev; }}; }} \
-                 else {{ url = {{ inherit (p.src) url; }}; }}; \
-               derived = if d == null then {{}} else \
-                 (if d ? goModules then {{ vendorHash = d.goModules.drvPath; }} else {{}}) // \
-                 (if d ? npmDeps then {{ npmDepsHash = d.npmDeps.drvPath; }} else {{}}); \
-             }}) cfg"
+             {{ src = p.src.drvPath; inherit (p) fetcher derived; }}) cfg"
     );
     let value = nix::eval_json(&expr)?;
     serde_json::from_value(value).map_err(|error| nix::Error::Nix(error.to_string()))
@@ -65,6 +67,10 @@ fn config_path(config: &str) -> Result<String, nix::Error> {
     let path = std::fs::canonicalize(config).map_err(|error| nix::Error::Nix(error.to_string()))?;
     serde_json::to_string(&path.to_string_lossy())
         .map_err(|error| nix::Error::Nix(error.to_string()))
+}
+
+fn evaluator_path() -> Result<String, nix::Error> {
+    config_path(concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix"))
 }
 
 #[cfg(test)]
@@ -78,12 +84,272 @@ mod tests {
             ("curlie".into(), "v1.8.2".into()),
             ("sloc".into(), "0.3.2".into()),
         ]);
-        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/example/pins-config.nix");
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/example1/pins-config.nix"
+        );
 
-        let results = probe_drvs(config, &versions).unwrap();
+        let results = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
 
         assert!(matches!(results["curlie"].fetcher, Fetcher::Github(_)));
         assert!(results["curlie"].derived.contains_key("vendorHash"));
         assert!(results["sloc"].derived.contains_key("npmDepsHash"));
+    }
+
+    #[test]
+    fn declarative_github_go_pin_evaluates_through_the_public_nix_seam() {
+        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/declarative-go.nix"
+        );
+        let expr = format!(
+            r#"let
+  pkgs = {{
+    lib.fakeHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    fetchFromGitHub = args: args // {{ drvPath = "/nix/store/demo-source.drv"; }};
+    buildGoModule = args: args // {{ goModules.drvPath = "/nix/store/demo-go-modules.drv"; }};
+  }};
+  cfg = import {evaluator} {{
+    inherit pkgs;
+    config = {config};
+    pins.demo = {{ version = "v1.2.3"; }};
+  }};
+in {{
+  inherit (cfg.demo) check fetcher derived;
+  src = cfg.demo.src.drvPath;
+  package = cfg.demo.packages.default.pname;
+  root = cfg.demo.packages.default.modRoot;
+  ldflags = cfg.demo.packages.default.ldflags;
+}}"#
+        );
+
+        let result = nix::eval_json(&expr).unwrap();
+
+        assert_eq!(result["check"], serde_json::json!({"github": "acme/demo"}));
+        assert_eq!(
+            result["fetcher"],
+            serde_json::json!({"github": {"owner": "acme", "repo": "demo", "rev": "v1.2.3"}})
+        );
+        assert_eq!(result["src"], "/nix/store/demo-source.drv");
+        assert_eq!(
+            result["derived"],
+            serde_json::json!({"vendorHash": "/nix/store/demo-go-modules.drv"})
+        );
+        assert_eq!(result["package"], "demo");
+        assert_eq!(result["root"], "cmd/demo");
+        assert_eq!(result["ldflags"], serde_json::json!(["-s"]));
+    }
+
+    #[test]
+    fn probes_declarative_github_go_pins_through_the_cli_seam() {
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/declarative-go.nix"
+        );
+
+        let checks = probe_checks(config).unwrap();
+        let results = probe_drvs(
+            config,
+            &BTreeMap::from([("demo".into(), "v1.2.3".into())]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert!(matches!(checks["demo"], crate::checker::Checker::Github(_)));
+        assert!(matches!(results["demo"].fetcher, Fetcher::Github(_)));
+        assert!(results["demo"].derived.contains_key("vendorHash"));
+    }
+
+    #[test]
+    fn derived_probes_use_the_locked_source_hash() {
+        let versions = BTreeMap::from([("cpa-manager-plus".into(), "v1.12.1".into())]);
+        let hashes = BTreeMap::from([(
+            "cpa-manager-plus".into(),
+            "sha256-tq5F5NgKyahsYOmv5NDF1TMwc5OfTx18aCd2PyrvTNM=".into(),
+        )]);
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/example2/pins-config.nix"
+        );
+
+        let fake_source = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
+        let locked_source = probe_drvs(config, &versions, &hashes).unwrap();
+
+        assert_ne!(
+            fake_source["cpa-manager-plus"].derived,
+            locked_source["cpa-manager-plus"].derived
+        );
+        assert!(locked_source["cpa-manager-plus"]
+            .derived
+            .contains_key("vendorHash"));
+        assert!(locked_source["cpa-manager-plus"]
+            .derived
+            .contains_key("npmDepsHash"));
+    }
+
+    #[test]
+    fn locked_evaluator_exposes_named_go_and_npm_packages() {
+        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/example2/pins-config.nix"
+        );
+        let expr = format!(
+            r#"let
+  pkgs = import <nixpkgs> {{}};
+  cfg = import {evaluator} {{
+    inherit pkgs;
+    config = {config};
+    pins.cpa-manager-plus = {{
+      version = "v1.12.1";
+      hash = "sha256-tq5F5NgKyahsYOmv5NDF1TMwc5OfTx18aCd2PyrvTNM=";
+      derived.vendorHash = "sha256-GBccl8V87u26dtrGpHR+rKqRBqX6lq1SBwfsPvj/+44=";
+      derived.npmDepsHash = "sha256-yWVErql5SWOSbbw2DZUlXBJp7zqZngkc8uAC5ZfnjX0=";
+    }};
+  }};
+in {{
+  managerServer = cfg.cpa-manager-plus.packages.manager-server.drvPath;
+  web = cfg.cpa-manager-plus.packages.web.drvPath;
+}}"#
+        );
+
+        let result = nix::eval_json(&expr).unwrap();
+
+        assert!(result["managerServer"]
+            .as_str()
+            .unwrap()
+            .contains("cpa-manager-plus-manager-server-v1.12.1"));
+        assert!(result["web"]
+            .as_str()
+            .unwrap()
+            .contains("cpa-manager-plus-web-v1.12.1"));
+    }
+
+    #[test]
+    fn pins_file_entry_exposes_named_packages() {
+        let packages = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/packages.nix");
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/example2/pins-config.nix"
+        );
+        let pins_file = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins.json");
+        let expr = format!(
+            r#"let
+  pkgs = import <nixpkgs> {{}};
+  result = import {packages} {{
+    inherit pkgs;
+    config = {config};
+    pinsFile = {pins_file};
+  }};
+in {{
+  managerServer = result.cpa-manager-plus.manager-server.drvPath;
+  web = result.cpa-manager-plus.web.drvPath;
+}}"#
+        );
+
+        let result = nix::eval_json(&expr).unwrap();
+
+        assert!(result["managerServer"]
+            .as_str()
+            .unwrap()
+            .contains("cpa-manager-plus-manager-server-v1.12.1"));
+        assert!(result["web"]
+            .as_str()
+            .unwrap()
+            .contains("cpa-manager-plus-web-v1.12.1"));
+    }
+
+    #[test]
+    fn declarative_errors_name_the_pin_and_package() {
+        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/invalid-declarations.nix"
+        );
+        let cases = [
+            (
+                "cfg.missing-owner.check",
+                ["pin 'missing-owner'", "field 'owner'"],
+            ),
+            (
+                "cfg.unsupported-fetcher.check",
+                ["pin 'unsupported-fetcher'", "fetcher 'gitlab'"],
+            ),
+            (
+                "cfg.unsupported-builder.derived",
+                ["pin 'unsupported-builder'", "package 'default'"],
+            ),
+        ];
+
+        for (selection, expected) in cases {
+            let expr = format!(
+                r#"let
+  pkgs = {{
+    lib.fakeHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    fetchFromGitHub = args: args // {{ drvPath = "/nix/store/demo-source.drv"; }};
+  }};
+  cfg = import {evaluator} {{
+    inherit pkgs;
+    config = {config};
+    pins = {{
+      missing-owner.version = "v1";
+      unsupported-fetcher.version = "v1";
+      unsupported-builder.version = "v1";
+    }};
+  }};
+in {selection}"#
+            );
+            let error = format!("{:?}", nix::eval_json(&expr).unwrap_err());
+
+            for needle in expected {
+                assert!(error.contains(needle), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn multiple_same_type_packages_get_stable_derived_hash_names() {
+        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/declarative-multi-go.nix"
+        );
+        let expr = format!(
+            r#"let
+  pkgs = {{
+    lib.fakeHash = "fake";
+    fetchFromGitHub = args: args // {{ drvPath = "/nix/store/demo-source.drv"; }};
+    buildGoModule = args: args // {{
+      goModules.drvPath = "/nix/store/${{args.pname}}-go-modules.drv";
+    }};
+  }};
+  cfg = import {evaluator} {{
+    inherit pkgs;
+    config = {config};
+    pins.demo = {{
+      version = "v1";
+      derived."api.vendorHash" = "api-hash";
+      derived."cli.vendorHash" = "cli-hash";
+    }};
+  }};
+in {{
+  inherit (cfg.demo) derived;
+  apiHash = cfg.demo.packages.api.vendorHash;
+  cliHash = cfg.demo.packages.cli.vendorHash;
+}}"#
+        );
+
+        let result = nix::eval_json(&expr).unwrap();
+
+        assert_eq!(
+            result["derived"],
+            serde_json::json!({
+                "api.vendorHash": "/nix/store/demo-api-go-modules.drv",
+                "cli.vendorHash": "/nix/store/demo-cli-go-modules.drv"
+            })
+        );
+        assert_eq!(result["apiHash"], "api-hash");
+        assert_eq!(result["cliHash"], "cli-hash");
     }
 }
