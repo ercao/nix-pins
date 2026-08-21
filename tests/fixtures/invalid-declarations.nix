@@ -1,5 +1,4 @@
-{ pin }:
-{
+{pin}: {
   missing-owner = pin.github {
     repo = "demo";
     packages.default = pin.goModule {
@@ -10,7 +9,7 @@
 
   unsupported-fetcher = {
     _type = "gitlab";
-    args.packages = { };
+    args.packages = {};
   };
 
   unsupported-builder = pin.github {
@@ -20,5 +19,19 @@
       _type = "rustPackage";
       args.root = ".";
     };
+  };
+
+  reserved-fetcher-arg = pin.mk {
+    checker = pin.checker.cmd "printf v1";
+    fetcher = pin.fetcher.github {
+      owner = "acme";
+      repo = "demo";
+      fetcherArgs.owner = "override";
+    };
+  };
+
+  non-string-url = pin.mk {
+    checker = pin.checker.cmd "printf v1";
+    fetcher = pin.fetcher.url {url = version: {inherit version;};};
   };
 }

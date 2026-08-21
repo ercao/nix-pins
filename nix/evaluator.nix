@@ -163,7 +163,8 @@
   evaluatePin = pinName: declaration: let
     normalized = normalizePin pinName declaration;
     check = evaluateChecker pinName normalized.checker;
-    valid = builtins.deepSeq normalized.packages (fetchers.validate pinName normalized.fetcher);
+    validationFetcher = (fetchers.evaluate pinName {version = "nix-pins-validation";} normalized.fetcher).fetcher;
+    valid = builtins.deepSeq normalized.packages (builtins.deepSeq validationFetcher true);
     locked = pins.${pinName} or {};
     source = fetchers.evaluate pinName locked normalized.fetcher;
     packageNames = builtins.attrNames normalized.packages;

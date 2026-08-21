@@ -7,6 +7,7 @@ use crate::checker::Checker;
 use crate::nix::{self, FAKE};
 use crate::pins::Fetcher;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct ProbeResult {
@@ -70,7 +71,11 @@ fn config_path(config: &str) -> Result<String, nix::Error> {
 }
 
 fn evaluator_path() -> Result<String, nix::Error> {
-    config_path(concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix"))
+    let source = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+    let path = option_env!("NIX_PINS_EVALUATOR")
+        .filter(|path| Path::new(path).is_file())
+        .unwrap_or(source);
+    config_path(path)
 }
 
 #[cfg(test)]
@@ -280,6 +285,14 @@ in {{
                 "cfg.unsupported-builder.derived",
                 ["pin 'unsupported-builder'", "package 'default'"],
             ),
+            (
+                "cfg.reserved-fetcher-arg.check",
+                ["pin 'reserved-fetcher-arg'", "reserved field 'owner'"],
+            ),
+            (
+                "cfg.non-string-url.src.drvPath",
+                ["pin 'non-string-url'", "map Version to a string"],
+            ),
         ];
 
         for (selection, expected) in cases {
@@ -309,6 +322,65 @@ in {selection}"#
                 assert!(error.contains(needle), "{error}");
             }
         }
+    }
+
+    #[test]
+    fn fetcher_mapping_is_validated_with_checks() {
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/non-string-fetcher.nix"
+        );
+        let error = match probe_checks(config).unwrap_err() {
+            nix::Error::NoGotLine(error) | nix::Error::Nix(error) => error,
+        };
+
+        assert!(error.contains("pin 'demo'"), "{error}");
+        assert!(error.contains("map Version to a string"), "{error}");
+    }
+
+    #[test]
+    fn orthogonal_fetchers_apply_default_and_custom_version_mappings() {
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/orthogonal-fetchers.nix"
+        );
+        let checks = probe_checks(config).unwrap();
+        assert!(matches!(
+            checks["git-default"],
+            crate::checker::Checker::Cmd(_)
+        ));
+        assert!(matches!(
+            checks["git-mapped"],
+            crate::checker::Checker::Crate(_)
+        ));
+        assert!(matches!(checks["url"], crate::checker::Checker::Pypi(_)));
+
+        let versions = BTreeMap::from([
+            ("git-default".into(), "v1.2.3".into()),
+            ("git-mapped".into(), "2.0.0".into()),
+            ("url".into(), "3.0.0".into()),
+        ]);
+        let results = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&results["git-default"].fetcher).unwrap(),
+            serde_json::json!({"git": {
+                "url": "https://example.com/default.git",
+                "rev": "v1.2.3"
+            }})
+        );
+        assert_eq!(
+            serde_json::to_value(&results["git-mapped"].fetcher).unwrap(),
+            serde_json::json!({"git": {
+                "url": "https://example.com/mapped.git",
+                "rev": "refs/tags/2.0.0"
+            }})
+        );
+        assert_eq!(
+            serde_json::to_value(&results["url"].fetcher).unwrap(),
+            serde_json::json!({"url": {
+                "url": "https://example.com/demo-3.0.0.tar.gz"
+            }})
+        );
     }
 
     #[test]
@@ -434,5 +506,57 @@ in {{
         );
         assert_eq!(result["apiHash"], "api-hash");
         assert_eq!(result["cliHash"], "cli-hash");
+    }
+
+    #[test]
+    fn checker_and_fetcher_are_orthogonal_through_the_public_nix_seam() {
+        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+        let expr = format!(
+            r#"let
+  pkgs = {{
+    lib.fakeHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    fetchFromGitHub = args: args // {{ drvPath = "/nix/store/demo-source.drv"; }};
+  }};
+  config = builtins.toFile "pins-config.nix" ''
+    {{ pin }}: {{
+      demo = pin.mk {{
+        checker = pin.checker.github {{ owner = "versions"; repo = "demo"; }};
+        fetcher = pin.fetcher.github {{
+          owner = "sources";
+          repo = "demo";
+          rev = version: "refs/tags/''${{version}}";
+          fetcherArgs.fetchSubmodules = true;
+        }};
+      }};
+    }}
+  '';
+  cfg = import {evaluator} {{
+    inherit pkgs config;
+    pins.demo.version = "v1.2.3";
+  }};
+in {{
+  inherit (cfg.demo) check fetcher;
+  drvPath = cfg.demo.src.drvPath;
+}}"#
+        );
+
+        let result = nix::eval_json(&expr).unwrap();
+
+        assert_eq!(
+            result["check"],
+            serde_json::json!({"github": "versions/demo"})
+        );
+        assert_eq!(
+            result["fetcher"],
+            serde_json::json!({
+                "github": {
+                    "owner": "sources",
+                    "repo": "demo",
+                    "rev": "refs/tags/v1.2.3",
+                    "fetchSubmodules": true
+                }
+            })
+        );
+        assert_eq!(result["drvPath"], "/nix/store/demo-source.drv");
     }
 }

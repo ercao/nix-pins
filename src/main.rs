@@ -12,12 +12,9 @@ mod progress;
 use cli::{Command, Selection};
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{mpsc, Arc, Mutex};
-
-const DEFAULT_CONFIG: &str = "./pins-config.nix";
-const DEFAULT_PINS: &str = "./pins.json";
 
 struct SourceTask {
     name: String,
@@ -46,12 +43,10 @@ struct UpdateResult {
 }
 
 fn main() -> ExitCode {
-    let command = cli::parse();
-    let config = PathBuf::from(DEFAULT_CONFIG);
-    let pins_path = PathBuf::from(DEFAULT_PINS);
-    match command {
-        Command::Update(selection) => run_update(&config, &pins_path, &selection),
-        Command::Status(selection) => run_status(&config, &pins_path, &selection),
+    let invocation = cli::parse();
+    match invocation.command {
+        Command::Update(selection) => run_update(&invocation.config, &invocation.pins, &selection),
+        Command::Status(selection) => run_status(&invocation.config, &invocation.pins, &selection),
     }
 }
 
@@ -90,6 +85,7 @@ fn run_status(config: &Path, pins_path: &Path, selection: &Selection) -> ExitCod
     let result = (|| {
         let pins = pins::PinsFile::load(pins_path).map_err(|e| e.to_string())?;
         let checks = probe::probe_checks(&config.display().to_string()).map_err(nix_error)?;
+        selection.validate(checks.keys().map(String::as_str))?;
         for name in checks.keys().filter(|name| selection.matches(name)) {
             match pins.pins.get(name) {
                 Some(pin) => print!("{name} {}", pin.version),
@@ -117,9 +113,15 @@ fn update(
     selection: &Selection,
     progress: &progress::Progress,
 ) -> Result<UpdateResult, String> {
-    let mut pins = pins::PinsFile::load(pins_path).map_err(|e| e.to_string())?;
+    let mut transaction = pins::PinsFile::transaction(pins_path).map_err(|e| e.to_string())?;
+    let pins = &mut transaction.pins;
     let checker_options = checker::Options::from_env()?;
     let checks = probe::probe_checks(&config.display().to_string()).map_err(nix_error)?;
+    selection.validate(checks.keys().map(String::as_str))?;
+    if selection.is_all() {
+        pins.pins.retain(|name, _| checks.contains_key(name));
+        pins.failures.retain(|name, _| checks.contains_key(name));
+    }
     let selected: BTreeMap<_, _> = checks
         .into_iter()
         .filter(|(name, _)| selection.matches(name))
@@ -208,28 +210,19 @@ fn update(
                                 }
                             }
                         }
-                        Err(error) => {
-                            let error = nix_error(error);
-                            for name in sources.into_keys() {
-                                failures.insert(name, error.clone());
-                            }
-                        }
+                        Err(error) => return Err(nix_error(error)),
                     }
                 }
             }
-            Err(error) => {
-                let error = nix_error(error);
-                for name in versions.into_keys() {
-                    failures.insert(name, error.clone());
-                }
-            }
+            Err(error) => return Err(nix_error(error)),
         }
     }
     pins.failures.extend(failures.clone());
-    let writing = progress.stage(progress::Stage::Writing, ["pins.json".into()]);
-    writing.task_started("pins.json");
-    let save_result = pins.save(pins_path).map_err(|e| e.to_string());
-    writing.task_finished("pins.json");
+    let target = pins_path.display().to_string();
+    let writing = progress.stage(progress::Stage::Writing, [target.clone()]);
+    writing.task_started(&target);
+    let save_result = transaction.save().map_err(|e| e.to_string());
+    writing.task_finished(&target);
     writing.finish();
     save_result.map(|()| UpdateResult {
         processed,

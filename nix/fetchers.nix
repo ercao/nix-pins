@@ -127,5 +127,4 @@
     in {inherit fetcher src;};
 in {
   inherit constructors evaluate;
-  validate = pinName: declaration: builtins.deepSeq (validated pinName declaration) true;
 }

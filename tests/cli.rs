@@ -770,15 +770,17 @@ esac
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0; 4096];
-        let size = stream.read(&mut request).unwrap();
-        assert!(String::from_utf8_lossy(&request[..size]).contains("Bearer secret-token"));
-        write!(
-            stream,
-            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        )
-        .unwrap();
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let size = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..size]).contains("Bearer secret-token"));
+            write!(
+                stream,
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        }
     });
     let base = format!("http://{address}");
 
@@ -935,4 +937,208 @@ fn clap_help_version_and_errors_use_standard_exit_codes() {
     let error = run(&dir.0, &["update", "--unknown"]);
     assert_eq!(error.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&error.stderr).contains("--unknown"));
+}
+
+#[test]
+fn global_config_and_pins_paths_are_relocatable() {
+    let _serial = serial();
+    let dir = TempDir::new("paths");
+    fs::create_dir_all(dir.0.join("config")).unwrap();
+    fs::create_dir_all(dir.0.join("state")).unwrap();
+    fs::write(dir.0.join("config/custom.nix"), "{ pin }: {}\n").unwrap();
+
+    let output = run(
+        &dir.0,
+        &[
+            "--config",
+            "config/custom.nix",
+            "status",
+            "--pins",
+            "state/custom.json",
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn selectors_reject_unknown_names_and_filter_only_zero_matches() {
+    let _serial = serial();
+    let dir = TempDir::new("strict-selection");
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
+    write_executable(
+        &dir.0.join("nix"),
+        r#"#!/bin/sh
+printf '%s\n' '{"demo":{"cmd":"printf v1"}}'
+"#,
+    );
+
+    let unknown = run(&dir.0, &["status", "missing"]);
+    assert_eq!(unknown.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("unknown pin name"));
+
+    let empty = run(&dir.0, &["status", "--filter", "^missing$"]);
+    assert_eq!(empty.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("matched no pins"));
+}
+
+#[test]
+fn full_update_prunes_removed_pins_but_selected_update_preserves_them() {
+    let _serial = serial();
+    let dir = TempDir::new("reconcile");
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
+    fs::write(
+        dir.0.join("pins.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "pins": {
+                "alpha": {
+                    "version": "old",
+                    "fetcher": {"url": {"url": "https://old.invalid/alpha"}},
+                    "hash": "sha256-old-alpha",
+                    "fingerprints": {"hash": "/nix/store/old-alpha.drv"}
+                },
+                "beta": {
+                    "version": "old",
+                    "fetcher": {"url": {"url": "https://old.invalid/beta"}},
+                    "hash": "sha256-old-beta",
+                    "fingerprints": {"hash": "/nix/store/old-beta.drv"}
+                },
+                "removed": {
+                    "version": "old",
+                    "fetcher": {"url": {"url": "https://old.invalid/removed"}},
+                    "hash": "sha256-old-removed"
+                }
+            },
+            "failures": {"removed": "old failure"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    write_executable(
+        &dir.0.join("nix"),
+        r#"#!/bin/sh
+case "$1" in
+  eval)
+    case "$*" in
+      *p.check*) printf '%s\n' '{"alpha":{"cmd":"printf v2"},"beta":{"cmd":"printf v2"}}' ;;
+      *p.src.drvPath*) printf '%s\n' '{"alpha":{"src":"/nix/store/alpha.drv","fetcher":{"url":{"url":"https://new.invalid/alpha"}},"derived":{}},"beta":{"src":"/nix/store/beta.drv","fetcher":{"url":{"url":"https://new.invalid/beta"}},"derived":{}}}' ;;
+    esac
+    ;;
+  build)
+    printf '%s\n' 'got: sha256-new' >&2
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let selected = run(&dir.0, &["update", "alpha"]);
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
+    assert!(pins["pins"].get("removed").is_some());
+    assert!(pins["failures"].get("removed").is_some());
+
+    let full = run(&dir.0, &["update"]);
+    assert!(
+        full.status.success(),
+        "{}",
+        String::from_utf8_lossy(&full.stderr)
+    );
+    let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
+    assert!(pins["pins"].get("removed").is_none());
+    assert!(pins.get("failures").is_none());
+}
+
+#[test]
+fn first_pin_failure_records_only_the_failure() {
+    let _serial = serial();
+    let dir = TempDir::new("first-failure");
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
+    write_executable(
+        &dir.0.join("nix"),
+        r#"#!/bin/sh
+printf '%s\n' '{"demo":{"cmd":"printf failed >&2; exit 1"}}'
+"#,
+    );
+
+    let output = run(&dir.0, &["update"]);
+    assert_eq!(output.status.code(), Some(1));
+    let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
+    assert!(pins["pins"].get("demo").is_none());
+    assert!(pins["failures"]["demo"]
+        .as_str()
+        .unwrap()
+        .contains("failed"));
+}
+
+#[test]
+fn configuration_errors_leave_the_pins_file_byte_for_byte_unchanged() {
+    let _serial = serial();
+    let dir = TempDir::new("config-error");
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
+    let original = b"{\n  \"schemaVersion\": 1,\n  \"pins\": {}\n}\n";
+    fs::write(dir.0.join("pins.json"), original).unwrap();
+    write_executable(
+        &dir.0.join("nix"),
+        r#"#!/bin/sh
+case "$*" in
+  *p.check*) printf '%s\n' '{"demo":{"cmd":"printf v1"}}' ;;
+  *) printf '%s\n' 'invalid fetcher mapping' >&2; exit 1 ;;
+esac
+"#,
+    );
+
+    let output = run(&dir.0, &["update"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(fs::read(dir.0.join("pins.json")).unwrap(), original);
+}
+
+#[test]
+fn unchanged_update_preserves_the_pins_file_mtime() {
+    let _serial = serial();
+    let dir = TempDir::new("mtime");
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
+    write_executable(
+        &dir.0.join("nix"),
+        r#"#!/bin/sh
+case "$1" in
+  eval)
+    case "$*" in
+      *p.check*) printf '%s\n' '{"demo":{"cmd":"printf v1"}}' ;;
+      *p.src.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo.drv","fetcher":{"url":{"url":"https://example.invalid/demo"}},"derived":{}}}' ;;
+    esac
+    ;;
+  build)
+    printf '%s\n' 'got: sha256-demo' >&2
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let first = run(&dir.0, &["update"]);
+    assert!(first.status.success());
+    let modified = fs::metadata(dir.0.join("pins.json"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let second = run(&dir.0, &["update"]);
+    assert!(second.status.success());
+    assert_eq!(
+        fs::metadata(dir.0.join("pins.json"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        modified
+    );
 }
