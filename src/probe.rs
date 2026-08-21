@@ -288,14 +288,17 @@ in {{
   pkgs = {{
     lib.fakeHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     fetchFromGitHub = args: args // {{ drvPath = "/nix/store/demo-source.drv"; }};
+    fetchurl = args: args // {{ drvPath = "/nix/store/demo-url.drv"; }};
   }};
   cfg = import {evaluator} {{
     inherit pkgs;
     config = {config};
     pins = {{
-      missing-owner.version = "v1";
-      unsupported-fetcher.version = "v1";
-      unsupported-builder.version = "v1";
+    missing-owner.version = "v1";
+    unsupported-fetcher.version = "v1";
+    unsupported-builder.version = "v1";
+    reserved-fetcher-arg.version = "v1";
+    non-string-url.version = "v1";
     }};
   }};
 in {selection}"#
@@ -306,6 +309,86 @@ in {selection}"#
                 assert!(error.contains(needle), "{error}");
             }
         }
+    }
+
+    #[test]
+    fn orthogonal_git_and_url_fetchers_evaluate_through_the_public_nix_seam() {
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/declarative-orthogonal.nix"
+        );
+        let checks = probe_checks(config).unwrap();
+        assert!(matches!(
+            checks["git-source"],
+            crate::checker::Checker::Cmd(_)
+        ));
+        assert!(matches!(
+            checks["url-source"],
+            crate::checker::Checker::Pypi(_)
+        ));
+        assert!(matches!(
+            checks["npm-source"],
+            crate::checker::Checker::Npm(_)
+        ));
+        assert!(matches!(
+            checks["git-checker-url-source"],
+            crate::checker::Checker::Git(_)
+        ));
+        assert!(matches!(
+            checks["crate-git-source"],
+            crate::checker::Checker::Crate(_)
+        ));
+
+        let versions = BTreeMap::from([
+            ("git-source".into(), "v1.2.3".into()),
+            ("url-source".into(), "2.0.0".into()),
+            ("npm-source".into(), "3.0.0".into()),
+            ("git-checker-url-source".into(), "main-sha".into()),
+            ("crate-git-source".into(), "4.0.0".into()),
+        ]);
+        let results = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&results["git-source"].fetcher).unwrap(),
+            serde_json::json!({
+                "git": {
+                    "url": "https://example.com/demo.git",
+                    "rev": "refs/tags/v1.2.3"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&results["url-source"].fetcher).unwrap(),
+            serde_json::json!({
+                "url": {
+                    "url": "https://example.com/demo-2.0.0.tar.gz"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&results["npm-source"].fetcher).unwrap(),
+            serde_json::json!({
+                "url": {
+                    "url": "https://registry.npmjs.org/@scope/demo/-/demo-3.0.0.tgz"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&results["git-checker-url-source"].fetcher).unwrap(),
+            serde_json::json!({
+                "url": {
+                    "url": "https://example.com/demo-main-sha.tar.gz"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&results["crate-git-source"].fetcher).unwrap(),
+            serde_json::json!({
+                "git": {
+                    "url": "https://example.com/demo.git",
+                    "rev": "refs/tags/4.0.0"
+                }
+            })
+        );
     }
 
     #[test]

@@ -114,6 +114,72 @@ esac
 }
 
 #[test]
+fn orthogonal_public_dsl_updates_the_pins_file() {
+    let _serial = serial();
+    let dir = TempDir::new("orthogonal-update");
+    fs::write(
+        dir.0.join("pins-config.nix"),
+        r#"{ pin }: {
+  demo = pin.mk {
+    checker = pin.checker.cmd "printf v1.2.3";
+    fetcher = pin.fetcher.url {
+      url = version: "https://example.com/demo-${version}.tar.gz";
+    };
+  };
+}
+"#,
+    )
+    .unwrap();
+    let nix = Command::new("sh")
+        .args(["-c", "command -v nix"])
+        .output()
+        .unwrap();
+    assert!(nix.status.success());
+    let nix = String::from_utf8(nix.stdout).unwrap();
+    write_executable(
+        &dir.0.join("nix"),
+        &format!(
+            r#"#!/bin/sh
+case "$1" in
+  eval)
+    exec {} "$@"
+    ;;
+  build)
+    printf '%s\n' 'error: hash mismatch' '  got: sha256-BlpIDik4hkU4c+KCyAmgUURIN362RDQID/qo6Ojp2Ek=' >&2
+    exit 1
+    ;;
+esac
+"#,
+            nix.trim()
+        ),
+    );
+
+    let output = run(&dir.0, &["update"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
+    assert_eq!(pins["pins"]["demo"]["version"], "v1.2.3");
+    assert_eq!(
+        pins["pins"]["demo"]["hash"],
+        "sha256-BlpIDik4hkU4c+KCyAmgUURIN362RDQID/qo6Ojp2Ek="
+    );
+    assert_eq!(
+        pins["pins"]["demo"]["fetcher"],
+        serde_json::json!({
+            "url": {
+                "url": "https://example.com/demo-v1.2.3.tar.gz"
+            }
+        })
+    );
+    assert!(pins["pins"]["demo"]["fingerprints"]["hash"]
+        .as_str()
+        .is_some_and(|src| src.starts_with("/nix/store/")));
+}
+
+#[test]
 fn update_keeps_failed_pins_and_writes_successful_ones() {
     let _serial = serial();
     let dir = TempDir::new("partial-failure");
