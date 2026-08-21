@@ -165,7 +165,15 @@ esac
     let output = run(&dir.0, &["update"]);
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("bad"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("\u{1b}"), "{stderr}");
+    assert!(stderr.contains("Processed 2 pins; 1 failed"), "{stderr}");
+    assert!(
+        stderr.contains("nix-pins: update completed with failures:"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("bad"), "{stderr}");
+    assert!(stderr.contains("checker-failed"), "{stderr}");
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert_eq!(pins["pins"]["bad"]["version"], "v1");
     assert_eq!(pins["pins"]["bad"]["hash"], "sha256-old-bad");
