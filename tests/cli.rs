@@ -562,8 +562,8 @@ fn reader_dispatches_github_and_git_fetchers() {
             fetchurl = args: args // {{ kind = "url"; }};
           }};
         }}; in {{
-          github = {{ inherit (pins.github.src) kind owner repo rev hash; inherit (pins.github) vendorHash; }};
-          git = {{ inherit (pins.git.src) kind url rev hash; }};
+        github = {{ inherit (pins.github.src) kind owner repo rev hash; inherit (pins.github) pname vendorHash; }};
+        git = {{ inherit (pins.git.src) kind url rev hash; inherit (pins.git) pname; }};
         }}"#,
         reader = reader.display(),
         pins = pins_path.display(),
@@ -580,8 +580,10 @@ fn reader_dispatches_github_and_git_fetchers() {
     );
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["github"]["kind"], "github");
+    assert_eq!(value["github"]["pname"], "github");
     assert_eq!(value["github"]["vendorHash"], "sha256-vendor");
     assert_eq!(value["git"]["kind"], "git");
+    assert_eq!(value["git"]["pname"], "git");
 }
 
 #[test]

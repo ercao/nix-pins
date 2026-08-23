@@ -10,5 +10,5 @@ let
     else throw "nix-pins: unknown fetcher for ${name}";
 in
 builtins.mapAttrs
-  (name: p: { inherit (p) version; src = mkSrc name p; } // (p.derived or {}))
+  (name: p: { pname = name; inherit (p) version; src = mkSrc name p; } // (p.derived or {}))
   data.pins
