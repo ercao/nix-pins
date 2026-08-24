@@ -533,4 +533,32 @@ in {{
         );
         assert_eq!(result["drvPath"], "/nix/store/demo-patched.drv");
     }
+
+    #[test]
+    fn archive_fetchers_apply_version_mappings() {
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/archive-fetchers.nix");
+        let checks = probe_checks(config).unwrap();
+        assert!(matches!(checks["zip"], crate::checker::Checker::Cmd(_)));
+        assert!(matches!(checks["huggingface"], crate::checker::Checker::Cmd(_)));
+
+        let versions = BTreeMap::from([("zip".into(), "v1.2.3".into()), ("huggingface".into(), "2.0.0".into())]);
+        let results = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&results["zip"].fetcher).unwrap(),
+            serde_json::json!({"zip": {
+                "url": "https://example.com/demo-v1.2.3.tar.gz",
+                "stripRoot": false
+            }})
+        );
+        assert_eq!(
+            serde_json::to_value(&results["huggingface"].fetcher).unwrap(),
+            serde_json::json!({"huggingface": {
+                "repoId": "acme/demo",
+                "rev": "refs/tags/2.0.0",
+                "backend": "lfs",
+                "repoType": "dataset"
+            }})
+        );
+    }
 }
