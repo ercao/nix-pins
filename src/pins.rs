@@ -46,7 +46,9 @@ pub struct Pin {
 pub enum Fetcher {
     Github(BTreeMap<String, serde_json::Value>),
     Git(BTreeMap<String, serde_json::Value>),
+    Huggingface(BTreeMap<String, serde_json::Value>),
     Url(BTreeMap<String, serde_json::Value>),
+    Zip(BTreeMap<String, serde_json::Value>),
 }
 
 impl PinsFile {

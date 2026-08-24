@@ -42,8 +42,16 @@
       _type = "git";
       inherit args;
     };
+    huggingface = args: {
+      _type = "huggingface";
+      inherit args;
+    };
     url = args: {
       _type = "url";
+      inherit args;
+    };
+    zip = args: {
+      _type = "zip";
       inherit args;
     };
   };
@@ -71,6 +79,16 @@
     in
       assert builtins.isFunction rev || throw "nix-pins: pin '${pinName}' git Fetcher field 'rev' must be a function";
       assert validArgs; {inherit kind args url rev;}
+    else if kind == "huggingface"
+    then let
+      args = validateFields pinName "Hugging Face Fetcher" ["target" "repoId" "rev" "fetcherArgs"] rawArgs;
+      repoId = targets.field pinName "Hugging Face Fetcher" "repoId" args;
+      rev = args.rev or (version: version);
+      validArgs = validateFetcherArgs pinName "Hugging Face Fetcher" ["repoId" "rev" "tag" "hash"] args;
+    in
+      assert builtins.isString repoId || throw "nix-pins: pin '${pinName}' Hugging Face Fetcher field 'repoId' must be a string";
+      assert builtins.isFunction rev || throw "nix-pins: pin '${pinName}' Hugging Face Fetcher field 'rev' must be a function";
+      assert validArgs; {inherit kind args repoId rev;}
     else if kind == "url"
     then let
       args = validateFields pinName "URL Fetcher" ["target" "url" "fetcherArgs"] rawArgs;
@@ -78,6 +96,14 @@
       validArgs = validateFetcherArgs pinName "URL Fetcher" ["url" "hash"] args;
     in
       assert builtins.isFunction url || throw "nix-pins: pin '${pinName}' URL Fetcher field 'url' must be a function";
+      assert validArgs; {inherit kind args url;}
+    else if kind == "zip"
+    then let
+      args = validateFields pinName "zip Fetcher" ["target" "url" "fetcherArgs"] rawArgs;
+      url = targets.field pinName "zip Fetcher" "url" args;
+      validArgs = validateFetcherArgs pinName "zip Fetcher" ["url" "hash"] args;
+    in
+      assert builtins.isFunction url || throw "nix-pins: pin '${pinName}' zip Fetcher field 'url' must be a function";
       assert validArgs; {inherit kind args url;}
     else throw "nix-pins: pin '${pinName}' uses unsupported Fetcher '${kind}'";
 
@@ -122,10 +148,30 @@
       };
       src = builtins.deepSeq fetcher.git (pkgs.fetchgit (fetcher.git // {hash = locked.hash or fake;}));
     in {inherit fetcher src;}
-    else let
+    else if config.kind == "huggingface"
+    then let
+      rev = mappedString pinName "Hugging Face Fetcher" "rev" config.rev version;
+      fetcher = {
+        huggingface =
+          {backend = "lfs";}
+          // fetcherArgs
+          // {
+            inherit (config) repoId;
+            inherit rev;
+          };
+      };
+      src = builtins.deepSeq fetcher.huggingface (pkgs.fetchFromHuggingFace (fetcher.huggingface // {hash = locked.hash or fake;}));
+    in {inherit fetcher src;}
+    else if config.kind == "url"
+    then let
       url = mappedString pinName "URL Fetcher" "url" config.url version;
       fetcher = {url = fetcherArgs // {inherit url;};};
       src = builtins.deepSeq fetcher.url (pkgs.fetchurl (fetcher.url // {hash = locked.hash or fake;}));
+    in {inherit fetcher src;}
+    else let
+      url = mappedString pinName "zip Fetcher" "url" config.url version;
+      fetcher = {zip = fetcherArgs // {inherit url;};};
+      src = builtins.deepSeq fetcher.zip (pkgs.fetchzip (fetcher.zip // {hash = locked.hash or fake;}));
     in {inherit fetcher src;};
 in {
   inherit constructors evaluate;
