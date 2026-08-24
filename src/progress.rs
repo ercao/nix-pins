@@ -318,16 +318,21 @@ struct Renderer {
     multi: MultiProgress,
     versions: BTreeMap<String, PinVersions>,
     active: BTreeMap<String, ActivePin>,
-    operation: Option<ProgressBar>,
+    operation: ProgressBar,
 }
 
 impl Renderer {
     fn new(target: ProgressDrawTarget) -> Self {
+        let multi = MultiProgress::with_draw_target(target);
+        let operation = ProgressBar::new_spinner();
+        operation.set_style(spinner_style());
+        let operation = multi.add(operation);
+        operation.finish_and_clear();
         Self {
-            multi: MultiProgress::with_draw_target(target),
+            multi,
             versions: BTreeMap::new(),
             active: BTreeMap::new(),
-            operation: None,
+            operation,
         }
     }
 
@@ -417,17 +422,14 @@ impl Renderer {
             Event::PinFailed { name, location } => self.finish_pin(&name, false, Some(location)),
             Event::OperationStarted(label) => {
                 self.clear_operation();
-                let bar = ProgressBar::new_spinner();
-                bar.set_style(spinner_style());
-                bar.set_message(label);
-                let bar = self.multi.add(bar);
-                bar.tick();
-                self.operation = Some(bar);
+                self.operation.set_message(label);
+                self.operation.reset();
+                self.operation.tick();
             }
             Event::OperationFinished(status) => {
-                let label = self.operation.as_ref().map(|operation| operation.message().to_string());
+                let label = self.operation.message().to_string();
                 self.clear_operation();
-                if let (Some(success), Some(label)) = (status, label) {
+                if let Some(success) = status {
                     let symbol = if success { "✓" } else { "✗" };
                     let _ = self.multi.println(format!("{symbol} {label}"));
                 }
@@ -495,9 +497,7 @@ impl Renderer {
     }
 
     fn clear_operation(&mut self) {
-        if let Some(operation) = self.operation.take() {
-            operation.finish_and_clear();
-        }
+        self.operation.finish_and_clear();
     }
 
     fn clear(&mut self) {
@@ -681,6 +681,21 @@ mod tests {
         renderer.apply(Event::OperationFinished(Some(false)));
 
         assert!(term.contents().contains("✗ Writing pins.json"), "{}", term.contents());
+    }
+
+    #[test]
+    fn operation_bar_is_reused_between_stages() {
+        let term = InMemoryTerm::new(4, 80);
+        let mut renderer = Renderer::new(ProgressDrawTarget::term_like(Box::new(term.clone())));
+        let operation = renderer.operation.clone();
+
+        renderer.apply(Event::OperationStarted("Loading configuration".into()));
+        renderer.apply(Event::OperationFinished(None));
+        term.moves_since_last_check();
+        renderer.apply(Event::OperationStarted("Resolving sources".into()));
+
+        assert_eq!(operation.message(), "Resolving sources");
+        assert!(!term.moves_since_last_check().contains("Loading configuration"));
     }
 
     #[test]
