@@ -187,7 +187,7 @@ fn update(
                 }
 
                 if sources.is_empty() {
-                    eprintln!("{source_recalculations} hashes need recalculation");
+                    progress.message(format!("{source_recalculations} hashes need recalculation"));
                 } else {
                     let successful_versions = sources
                         .iter()
@@ -204,7 +204,7 @@ fn update(
                             resolving.finish();
                             let recalculations =
                                 source_recalculations + count_derived_recalculations(pins, &derived_probes);
-                            eprintln!("{recalculations} hashes need recalculation");
+                            progress.message(format!("{recalculations} hashes need recalculation"));
                             let tasks = sources
                                 .into_iter()
                                 .map(|(name, source)| DerivedTask {

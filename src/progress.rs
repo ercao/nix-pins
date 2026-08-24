@@ -90,6 +90,7 @@ enum Event {
     },
     OperationStarted(String),
     OperationFinished(Option<bool>),
+    Message(String),
     Finished(mpsc::Sender<()>),
 }
 
@@ -129,6 +130,10 @@ impl Progress {
             reporter,
             finished: false,
         }
+    }
+
+    pub fn message(&self, message: impl Into<String>) {
+        self.reporter().send(Event::Message(message.into()));
     }
 
     pub fn finish(mut self) {
@@ -427,6 +432,9 @@ impl Renderer {
                     let _ = self.multi.println(format!("{symbol} {label}"));
                 }
             }
+            Event::Message(message) => {
+                let _ = self.multi.println(message);
+            }
             Event::Finished(done) => {
                 self.clear();
                 let _ = done.send(());
@@ -611,6 +619,7 @@ fn render_plain(receiver: mpsc::Receiver<Event>) {
                 }
             }
             Event::OperationFinished(None) => operation = None,
+            Event::Message(message) => eprintln!("{message}"),
             Event::PinDetail { .. }
             | Event::PinPaused(_)
             | Event::PackagesStarted { .. }
@@ -672,6 +681,29 @@ mod tests {
         renderer.apply(Event::OperationFinished(Some(false)));
 
         assert!(term.contents().contains("✗ Writing pins.json"), "{}", term.contents());
+    }
+
+    #[test]
+    fn renderer_prints_message_without_corrupting_active_pin() {
+        let term = InMemoryTerm::new(4, 100);
+        let mut renderer = Renderer::new(ProgressDrawTarget::term_like(Box::new(term.clone())));
+        renderer.apply(Event::PinDeclared {
+            name: "demo".into(),
+            current: "v1".into(),
+        });
+        renderer.apply(Event::TargetSelected {
+            name: "demo".into(),
+            target: "v2".into(),
+        });
+        renderer.apply(Event::PinStep {
+            name: "demo".into(),
+            step: PinStep::HashingSource,
+        });
+        renderer.apply(Event::Message("1 hashes need recalculation".into()));
+
+        let contents = term.contents();
+        assert!(contents.contains("1 hashes need recalculation\n"), "{contents}");
+        assert!(contents.contains("demo v1 v2 Hashing source"), "{contents}");
     }
 
     #[test]

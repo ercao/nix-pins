@@ -58,6 +58,9 @@ impl NixLog {
                 .map(str::to_owned)
                 .or_else(|| Some(line.into()));
         }
+        if !matches!(action, "start" | "stop" | "result") {
+            return None;
+        }
         let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) else {
             return Some(line.into());
         };
@@ -68,7 +71,7 @@ impl NixLog {
                     Some(101) => Activity::Download { done: 0, total: None },
                     Some(105) => Activity::Build { phase: None },
                     Some(108) => Activity::Query,
-                    Some(_) => return Some(line.into()),
+                    Some(_) => return None,
                     None => return Some(line.into()),
                 };
                 self.activities.insert(id, activity);
@@ -104,10 +107,10 @@ impl NixLog {
                             .or_else(|| Some(line.into()));
                     }
                     (101 | 104 | 105, _, None) => return Some(line.into()),
-                    _ => return Some(line.into()),
+                    _ => return None,
                 }
             }
-            _ => return Some(line.into()),
+            _ => unreachable!(),
         }
         None
     }
@@ -259,10 +262,15 @@ pub fn resolve_hash(drv_path: &str, mut progress: impl FnMut(Option<String>)) ->
 
 /// 从 hash mismatch 输出中提取 got 行的哈希。
 fn parse_got(log: &str) -> Option<String> {
-    log.lines()
-        .find_map(|l| l.split_once("got:"))
-        .map(|(_, rest)| rest.trim().to_string())
-        .filter(|h| h.starts_with("sha256-") || h.starts_with("sha512-"))
+    log.lines().find_map(|line| {
+        let (_, rest) = line.split_once("got:")?;
+        let start = rest.find("sha256-").or_else(|| rest.find("sha512-"))?;
+        let hash = rest[start..]
+            .chars()
+            .take_while(|character| character.is_ascii_alphanumeric() || "+/=-".contains(*character))
+            .collect::<String>();
+        (hash.len() > "sha256-".len()).then_some(hash)
+    })
 }
 
 #[cfg(test)]
@@ -300,6 +308,21 @@ mod tests {
     #[test]
     fn does_not_return_specified() {
         assert_ne!(parse_got(MISMATCH).as_deref(), Some(super::FAKE));
+    }
+
+    #[test]
+    fn extracts_colored_got_hash_after_an_invalid_got_line() {
+        let log = concat!(
+            "diagnostic got: not-a-hash\n",
+            "            got:    \u{1b}[35;1m",
+            "sha256-NWcqJkIPRKGSr9n6X2DWlS4/Kzsg+k4ue+mMuo/drn4=",
+            "\u{1b}[0m\n",
+        );
+
+        assert_eq!(
+            parse_got(log).as_deref(),
+            Some("sha256-NWcqJkIPRKGSr9n6X2DWlS4/Kzsg+k4ue+mMuo/drn4=")
+        );
     }
 
     #[test]
@@ -362,10 +385,17 @@ mod tests {
             log.push(r#"@nix {"action":"start","id":9}"#),
             Some(r#"@nix {"action":"start","id":9}"#.into())
         );
-        assert_eq!(
-            log.push(r#"@nix {"action":"start","id":9,"type":999}"#),
-            Some(r#"@nix {"action":"start","id":9,"type":999}"#.into())
-        );
+        assert_eq!(log.push(r#"@nix {"action":"start","id":9,"type":999}"#), None);
+        for frame in [
+            r#"@nix {"action":"start","id":10,"type":0,"fields":[]}"#,
+            r#"@nix {"action":"start","id":11,"type":102,"fields":[]}"#,
+            r#"@nix {"action":"start","id":12,"type":103,"fields":[]}"#,
+            r#"@nix {"action":"start","id":13,"type":104,"fields":[]}"#,
+            r#"@nix {"action":"result","id":10,"type":105,"fields":[0,1,0,0]}"#,
+            r#"@nix {"action":"result","id":10,"type":106,"fields":[101,0]}"#,
+        ] {
+            assert_eq!(log.push(frame), None);
+        }
         assert_eq!(log.push("ordinary diagnostic"), Some("ordinary diagnostic".into()));
         assert_eq!(log.push("@nix {broken"), Some("@nix {broken".into()));
     }

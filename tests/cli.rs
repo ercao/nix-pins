@@ -1077,10 +1077,16 @@ case "$1" in
       *"--log-format internal-json"*) ;;
       *) printf '%s\n' 'missing internal-json log format' >&2; exit 99 ;;
     esac
-    printf '%s\n' '@nix {"action":"start","id":1,"type":101,"fields":["https://secret.invalid/archive"]}' >&2
-    printf '%s\n' '@nix {"action":"result","id":1,"type":105,"fields":[1048576,2097152,0,0]}' >&2
-    printf '%s\n' '@nix {"action":"msg","level":0,"msg":"got: sha256-demo"}' >&2
-    exit 1
+printf '%s\n' '@nix {"action":"start","id":1,"type":101,"fields":["https://secret.invalid/archive"]}' >&2
+printf '%s\n' '@nix {"action":"result","id":1,"type":105,"fields":[1048576,2097152,0,0]}' >&2
+printf '%s\n' '@nix {"action":"start","id":2,"type":0,"fields":[]}' >&2
+printf '%s\n' '@nix {"action":"start","id":3,"type":102,"fields":[]}' >&2
+printf '%s\n' '@nix {"action":"start","id":4,"type":103,"fields":[]}' >&2
+printf '%s\n' '@nix {"action":"start","id":5,"type":104,"fields":[]}' >&2
+printf '%s\n' '@nix {"action":"result","id":2,"type":105,"fields":[0,1,0,0]}' >&2
+printf '%s\n' '@nix {"action":"result","id":2,"type":106,"fields":[101,0]}' >&2
+printf '            got:    \033[35;1msha256-NWcqJkIPRKGSr9n6X2DWlS4/Kzsg+k4ue+mMuo/drn4=\033[0m\n' >&2
+exit 1
     ;;
 esac
 "#,
