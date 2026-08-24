@@ -63,8 +63,8 @@ pub struct GitCheckerOptions {
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum GitMode {
-    #[default]
     Tag,
+    #[default]
     Head,
     Branch,
     Ref,
@@ -169,7 +169,7 @@ fn github_version(repository: &str, options: &Options) -> Result<String, String>
 
 fn git_version(config: &GitChecker) -> Result<String, String> {
     let (url, mode, branch, reference, include, exclude, sort) = match config {
-        GitChecker::Url(url) => (url.as_str(), GitMode::Tag, None, None, None, None, GitSort::Semver),
+        GitChecker::Url(url) => (url.as_str(), GitMode::Head, None, None, None, None, GitSort::Semver),
         GitChecker::Options(config) => (
             config.url.as_str(),
             config.mode,
@@ -536,6 +536,7 @@ mod tests {
         let checker = serde_json::from_value::<Checker>(serde_json::json!({
             "git": {
                 "url": fixture.url(),
+                "mode": "tag",
                 "include": "^missing$"
             }
         }))
@@ -553,10 +554,11 @@ mod tests {
         let cases = [
             (
                 serde_json::json!({
-                    "git": {
-                        "url": fixture.url(),
-                        "include": "^v",
-                        "exclude": "-",
+                "git": {
+                    "url": fixture.url(),
+                    "mode": "tag",
+                    "include": "^v",
+                    "exclude": "-",
                         "sort": "semver"
                     }
                 }),
@@ -564,10 +566,11 @@ mod tests {
             ),
             (
                 serde_json::json!({
-                    "git": {
-                        "url": fixture.url(),
-                        "include": "^release-",
-                        "sort": "lexicographic"
+                "git": {
+                    "url": fixture.url(),
+                    "mode": "tag",
+                    "include": "^release-",
+                    "sort": "lexicographic"
                     }
                 }),
                 "release-2",
@@ -699,14 +702,16 @@ mod tests {
     }
 
     #[test]
-    fn git_string_checker_remains_the_default_tag_mode() {
+    fn git_checker_defaults_to_head() {
         let fixture = GitFixture::new();
         let options = super::Options::from_env().unwrap();
-        let checker = serde_json::from_value::<Checker>(serde_json::json!({
-            "git": fixture.url()
-        }))
-        .unwrap();
-        assert_eq!(super::check(&checker, &options).unwrap(), "v2.0.0-beta");
+        for declaration in [
+            serde_json::json!({"git": fixture.url()}),
+            serde_json::json!({"git": {"url": fixture.url()}}),
+        ] {
+            let checker = serde_json::from_value::<Checker>(declaration).unwrap();
+            assert_eq!(super::check(&checker, &options).unwrap(), fixture.second.as_str());
+        }
     }
 
     #[test]

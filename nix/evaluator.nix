@@ -74,7 +74,7 @@
     then let
       args = validateFields pinName "git Checker" ["target" "url" "mode" "branch" "ref" "include" "exclude" "sort"] rawArgs;
       url = targets.field pinName "git Checker" "url" args;
-      mode = args.mode or "tag";
+        mode = args.mode or "head";
       branch = args.branch or null;
       ref = args.ref or null;
       include = args.include or null;

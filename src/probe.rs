@@ -381,6 +381,7 @@ in {selection}"#
             checks["git-checker-url-source"],
             crate::checker::Checker::Git(_)
         ));
+        assert!(format!("{:?}", checks["git-checker-url-source"]).contains("mode: Head"));
         assert!(matches!(checks["crate-git-source"], crate::checker::Checker::Crate(_)));
 
         let versions = BTreeMap::from([

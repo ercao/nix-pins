@@ -635,7 +635,7 @@ fn remaining_builtin_checkers_use_their_public_config_shapes() {
 case "$1" in
   eval)
     case "$*" in
-      *p.check*) printf '%s\n' '{{"crate":{{"crate":"demo-crate"}},"git":{{"git":"https://example.invalid/repo.git"}},"pypi":{{"pypi":"demo-package"}},"url":{{"url":{{"url":"{base}/versions","regex":"version=([0-9.]+)"}}}}}}' ;;
+*p.check*) printf '%s\n' '{{"crate":{{"crate":"demo-crate"}},"git":{{"git":{{"url":"https://example.invalid/repo.git","mode":"tag","sort":"semver"}}}},"pypi":{{"pypi":"demo-package"}},"url":{{"url":{{"url":"{base}/versions","regex":"version=([0-9.]+)"}}}}}}' ;;
       *p.fetchSrc.drvPath*) printf '%s\n' '{{"crate":{{"src":"/nix/store/crate.drv","fetcher":{{"url":{{"url":"https://example.invalid/crate"}}}},"derived":{{}}}},"git":{{"src":"/nix/store/git.drv","fetcher":{{"git":{{"url":"https://example.invalid/repo.git","rev":"v1.10.0"}}}},"derived":{{}}}},"pypi":{{"src":"/nix/store/pypi.drv","fetcher":{{"url":{{"url":"https://example.invalid/pypi"}}}},"derived":{{}}}},"url":{{"src":"/nix/store/url.drv","fetcher":{{"url":{{"url":"https://example.invalid/url"}}}},"derived":{{}}}}}}' ;;
     esac
     ;;

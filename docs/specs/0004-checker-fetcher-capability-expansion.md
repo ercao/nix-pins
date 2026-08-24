@@ -50,7 +50,7 @@ nix-pins 已经具备多种 Checker、三种 Pins File Fetcher，以及两阶段
 - URL Fetcher 必须提供从 Version 到 URL 的原生 Nix 函数；静态 URL 不作为隐式默认，因为它不能表达版本更新。
 - Git、URL 与 GitHub Fetcher 最终继续使用现有 Pins File Fetcher schema，不增加新的锁文件 schema 版本。
 - 通用 Fetcher 参数不得覆盖由锁定流程拥有的标识字段和完整性字段，包括 owner、repo、url、rev 与 hash。冲突属于 Configuration Error。
-- Git Checker 的默认模式为 tag，以保持现有行为。HEAD、branch 和 ref 模式都将远端对象解析为 commit SHA，并以该 SHA 作为 Version。
+- Git Checker 的默认模式为 HEAD。HEAD、branch 和 ref 模式都将远端对象解析为 commit SHA，并以该 SHA 作为 Version；tag 模式需显式声明。
 - branch 模式要求分支名，ref 模式要求完整 ref；缺失或互相冲突的参数属于 Configuration Error。
 - tag include 与 exclude 使用正则表达式匹配原始 tag。先执行 include，再执行 exclude；过滤后没有候选属于该 Pin 的 Checker 运行失败。
 - tag 排序支持 `semver` 与 `lexicographic`。`semver` 保持现有兼容排序规则，`lexicographic` 直接比较原始 tag；被选中的原始 tag 写入 Pins File。
