@@ -110,24 +110,41 @@ fn update(
     selection: &Selection,
     progress: &progress::Progress,
 ) -> Result<UpdateResult, String> {
-    let mut transaction = pins::PinsFile::transaction(pins_path).map_err(|e| e.to_string())?;
+    let mut transaction = pins::PinsFile::transaction(pins_path).map_err(|error| error.to_string())?;
     let pins = &mut transaction.pins;
     let checker_options = checker::Options::from_env()?;
-    let checks = probe::probe_checks(&config.display().to_string()).map_err(nix_error)?;
+
+    let loading = progress.operation("Loading configuration");
+    let checks = match probe::probe_checks(&config.display().to_string()).map_err(nix_error) {
+        Ok(checks) => {
+            loading.finish();
+            checks
+        }
+        Err(error) => {
+            loading.fail();
+            return Err(error);
+        }
+    };
     selection.validate(checks.keys().map(String::as_str))?;
     if selection.is_all() {
         pins.pins.retain(|name, _| checks.contains_key(name));
         pins.failures.retain(|name, _| checks.contains_key(name));
     }
+
     let selected: BTreeMap<_, _> = checks.into_iter().filter(|(name, _)| selection.matches(name)).collect();
     let processed = selected.len();
+    let reporter = progress.reporter();
+    for name in selected.keys() {
+        reporter.declare(name, pins.pins.get(name).map(|pin| pin.version.as_str()));
+    }
+
     let mut versions = BTreeMap::new();
     let mut failures = BTreeMap::new();
     for (name, result) in run_checkers(
         selected,
         checker_options,
         env_jobs("NIX_PINS_CHECKER_JOBS", 8),
-        progress,
+        reporter.clone(),
     ) {
         pins.failures.remove(&name);
         match result {
@@ -139,11 +156,15 @@ fn update(
             }
         }
     }
+
     if !versions.is_empty() {
         let config = config.display().to_string();
-        match probe::probe_drvs(&config, &versions, &BTreeMap::new()) {
+        let resolving = progress.operation(format!("Resolving sources · {} pins", versions.len()));
+        let source_probes = probe::probe_drvs(&config, &versions, &BTreeMap::new());
+        match source_probes {
             Ok(mut source_probes) => {
-                let source_recalculations = count_source_recalculations(&pins, &source_probes);
+                resolving.finish();
+                let source_recalculations = count_source_recalculations(pins, &source_probes);
                 let tasks = versions
                     .into_iter()
                     .map(|(name, version)| SourceTask {
@@ -154,7 +175,7 @@ fn update(
                     })
                     .collect();
                 let mut sources = BTreeMap::new();
-                for (name, result) in run_sources(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), progress) {
+                for (name, result) in run_sources(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), reporter.clone()) {
                     match result {
                         Ok(source) => {
                             sources.insert(name, source);
@@ -176,10 +197,13 @@ fn update(
                         .iter()
                         .map(|(name, source)| (name.clone(), source.hash.clone()))
                         .collect();
-                    match probe::probe_drvs(&config, &successful_versions, &source_hashes) {
+                    let resolving = progress.operation(format!("Resolving derived hashes · {} pins", sources.len()));
+                    let derived_probes = probe::probe_drvs(&config, &successful_versions, &source_hashes);
+                    match derived_probes {
                         Ok(mut derived_probes) => {
+                            resolving.finish();
                             let recalculations =
-                                source_recalculations + count_derived_recalculations(&pins, &derived_probes);
+                                source_recalculations + count_derived_recalculations(pins, &derived_probes);
                             eprintln!("{recalculations} hashes need recalculation");
                             let tasks = sources
                                 .into_iter()
@@ -189,7 +213,9 @@ fn update(
                                     source,
                                 })
                                 .collect();
-                            for (name, result) in run_derived(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), progress) {
+                            for (name, result) in
+                                run_derived(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), reporter.clone())
+                            {
                                 match result {
                                     Ok(pin) => {
                                         pins.pins.insert(name, pin);
@@ -200,63 +226,73 @@ fn update(
                                 }
                             }
                         }
-                        Err(error) => return Err(nix_error(error)),
+                        Err(error) => {
+                            resolving.fail();
+                            return Err(nix_error(error));
+                        }
                     }
                 }
             }
-            Err(error) => return Err(nix_error(error)),
+            Err(error) => {
+                resolving.fail();
+                return Err(nix_error(error));
+            }
         }
     }
+
     pins.failures.extend(failures.clone());
-    let target = pins_path.display().to_string();
-    let writing = progress.stage(progress::Stage::Writing, [target.clone()]);
-    writing.task_started(&target);
-    let save_result = transaction.save().map_err(|e| e.to_string());
-    writing.task_finished(&target);
-    writing.finish();
+    let writing = progress.operation("Writing pins.json");
+    let save_result = transaction.save().map_err(|error| error.to_string());
+    if save_result.is_ok() {
+        writing.succeed();
+    } else {
+        writing.fail();
+    }
     save_result.map(|()| UpdateResult { processed, failures })
 }
 
 fn run_sources(
     tasks: Vec<SourceTask>,
     jobs: usize,
-    progress: &progress::Progress,
+    reporter: progress::Reporter,
 ) -> BTreeMap<String, Result<SourceResult, String>> {
-    let reporter = progress.stage(
-        progress::Stage::Sources,
-        tasks
-            .iter()
-            .filter(|task| source_needs_recalculation(task))
-            .map(|task| task.name.clone()),
-    );
-    let details = reporter.clone();
     parallel_map(
         tasks.into_iter().map(|task| (task.name.clone(), task)),
         jobs,
-        reporter,
-        move |task| resolve_source(task, &details),
+        move |name, task| {
+            let result = resolve_source(task, &reporter);
+            if result.is_err() {
+                reporter.failed(name, "Hashing source");
+            } else {
+                reporter.pause(name);
+            }
+            result
+        },
     )
 }
 
-fn source_needs_recalculation(task: &SourceTask) -> bool {
-    task.probe
-        .as_ref()
-        .is_some_and(|probe| task.previous.as_ref().and_then(|pin| pin.fingerprints.get("hash")) != Some(&probe.src))
-}
-
-fn resolve_source(task: SourceTask, reporter: &progress::StageReporter) -> Result<SourceResult, String> {
+fn resolve_source(task: SourceTask, reporter: &progress::Reporter) -> Result<SourceResult, String> {
     let probe = task
         .probe
         .ok_or_else(|| format!("Probe did not return {}", task.name))?;
-    let hash = task
+    let hash = if let Some(pin) = task
         .previous
         .as_ref()
         .filter(|pin| pin.fingerprints.get("hash") == Some(&probe.src))
-        .map(|pin| Ok(pin.hash.clone()))
-        .unwrap_or_else(|| {
-            reporter.detail(&task.name, "src");
-            nix::resolve_hash(&probe.src).map_err(nix_error)
-        })?;
+    {
+        reporter.step(&task.name, progress::PinStep::SourceReused);
+        pin.hash.clone()
+    } else {
+        reporter.step(&task.name, progress::PinStep::HashingSource);
+        let name = task.name.clone();
+        let details = reporter.clone();
+        let hash = nix::resolve_hash(&probe.src, move |detail| {
+            details.detail(&name, detail);
+        })
+        .map_err(nix_error)?;
+        reporter.step(&task.name, progress::PinStep::SourceReady);
+        hash
+    };
     Ok(SourceResult {
         version: task.version,
         fetcher: probe.fetcher,
@@ -269,59 +305,90 @@ fn resolve_source(task: SourceTask, reporter: &progress::StageReporter) -> Resul
 fn run_derived(
     tasks: Vec<DerivedTask>,
     jobs: usize,
-    progress: &progress::Progress,
+    reporter: progress::Reporter,
 ) -> BTreeMap<String, Result<pins::Pin, String>> {
-    let reporter = progress.stage(
-        progress::Stage::Derived,
-        tasks
-            .iter()
-            .filter(|task| derived_needs_recalculation(task))
-            .map(|task| task.name.clone()),
-    );
-    let details = reporter.clone();
     parallel_map(
         tasks.into_iter().map(|task| (task.name.clone(), task)),
         jobs,
-        reporter,
-        move |task| resolve_derived(task, &details),
+        move |_, task| resolve_derived(task, &reporter),
     )
 }
 
-fn derived_needs_recalculation(task: &DerivedTask) -> bool {
-    task.probe.as_ref().is_some_and(|probe| {
-        probe.derived.iter().any(|(key, drv_path)| {
-            task.source
+fn resolve_derived(task: DerivedTask, reporter: &progress::Reporter) -> Result<pins::Pin, String> {
+    let Some(probe) = task.probe else {
+        reporter.failed(&task.name, "Resolving derived hashes");
+        return Err(format!("Probe did not return {}", task.name));
+    };
+    let packages = probe.package_derived();
+    let tree = !packages.is_empty() && (packages.len() != 1 || !packages.contains_key("default"));
+    if tree {
+        reporter.packages(&task.name, packages.keys().cloned().collect());
+    }
+
+    let mut derived = BTreeMap::new();
+    let mut fingerprints = BTreeMap::from([("hash".into(), task.source.fingerprint)]);
+    for (package, hashes) in &packages {
+        for (key, drv_path) in hashes {
+            let package_prefix = format!("{package}.");
+            let display_key = key.strip_prefix(&package_prefix).unwrap_or(key);
+            let reused = task
+                .source
                 .previous
                 .as_ref()
                 .filter(|pin| pin.fingerprints.get(key) == Some(drv_path))
                 .and_then(|pin| pin.derived.get(key))
-                .is_none()
-        })
-    })
-}
-
-fn resolve_derived(task: DerivedTask, reporter: &progress::StageReporter) -> Result<pins::Pin, String> {
-    let probe = task
-        .probe
-        .ok_or_else(|| format!("Probe did not return {}", task.name))?;
-    let mut derived = BTreeMap::new();
-    let mut fingerprints = BTreeMap::from([("hash".into(), task.source.fingerprint)]);
-    for (key, drv_path) in probe.derived {
-        let value = task
-            .source
-            .previous
-            .as_ref()
-            .filter(|pin| pin.fingerprints.get(&key) == Some(&drv_path))
-            .and_then(|pin| pin.derived.get(&key))
-            .cloned()
-            .map(Ok)
-            .unwrap_or_else(|| {
-                reporter.detail(&task.name, &key);
-                nix::resolve_hash(&drv_path).map_err(|error| hash_error(&key, error))
-            })?;
-        derived.insert(key.clone(), value);
-        fingerprints.insert(key, drv_path);
+                .cloned();
+            let hash = if let Some(hash) = reused {
+                if tree {
+                    reporter.package_reused(&task.name, package, display_key);
+                } else {
+                    reporter.step(&task.name, progress::PinStep::DerivedReused(display_key.into()));
+                }
+                hash
+            } else {
+                if tree {
+                    reporter.package_active(&task.name, package, display_key);
+                } else {
+                    reporter.step(&task.name, progress::PinStep::HashingDerived(display_key.into()));
+                }
+                let name = task.name.clone();
+                let package = package.clone();
+                let progress_package = package.clone();
+                let details = reporter.clone();
+                let result = nix::resolve_hash(drv_path, move |detail| {
+                    if tree {
+                        details.package_detail(&name, &progress_package, detail);
+                    } else {
+                        details.detail(&name, detail);
+                    }
+                })
+                .map_err(|error| hash_error(key, error));
+                match result {
+                    Ok(hash) => {
+                        if tree {
+                            reporter.package_ready(&task.name, &package, display_key);
+                        }
+                        hash
+                    }
+                    Err(error) => {
+                        if tree {
+                            reporter.package_failed(&task.name, &package, display_key);
+                        }
+                        let location = if tree {
+                            format!("{package}/{display_key}")
+                        } else {
+                            display_key.into()
+                        };
+                        reporter.failed(&task.name, location);
+                        return Err(error);
+                    }
+                }
+            };
+            derived.insert(key.clone(), hash);
+            fingerprints.insert(key.clone(), drv_path.clone());
+        }
     }
+    reporter.done(&task.name, tree.then_some(packages.len()));
     Ok(pins::Pin {
         version: task.source.version,
         fetcher: task.source.fetcher,
@@ -335,21 +402,30 @@ fn run_checkers(
     selected: BTreeMap<String, checker::Checker>,
     options: checker::Options,
     jobs: usize,
-    progress: &progress::Progress,
+    reporter: progress::Reporter,
 ) -> BTreeMap<String, Result<String, String>> {
-    let reporter = progress.stage(progress::Stage::Checking, selected.keys().cloned());
-    parallel_map(selected, jobs, reporter, move |declaration| {
-        checker::check(&declaration, &options)
+    parallel_map(selected, jobs, move |name, declaration| {
+        reporter.step(name, progress::PinStep::Checking);
+        let result = checker::check(&declaration, &options);
+        match &result {
+            Ok(version) => {
+                reporter.target(name, version);
+                reporter.step(name, progress::PinStep::VersionSelected);
+                reporter.pause(name);
+            }
+            Err(_) => reporter.failed(name, "Checking"),
+        }
+        result
     })
 }
 
-fn parallel_map<K, T, R, I, F>(tasks: I, jobs: usize, reporter: progress::StageReporter, function: F) -> BTreeMap<K, R>
+fn parallel_map<K, T, R, I, F>(tasks: I, jobs: usize, function: F) -> BTreeMap<K, R>
 where
     K: AsRef<str> + Ord + Send + 'static,
     T: Send + 'static,
     R: Send + 'static,
     I: IntoIterator<Item = (K, T)>,
-    F: Fn(T) -> R + Send + Sync + 'static,
+    F: Fn(&K, T) -> R + Send + Sync + 'static,
 {
     let queue = VecDeque::from_iter(tasks);
     let len = queue.len();
@@ -364,14 +440,11 @@ where
         let queue = Arc::clone(&queue);
         let function = Arc::clone(&function);
         let sender = sender.clone();
-        let reporter = reporter.clone();
         workers.push(std::thread::spawn(move || loop {
             let Some((key, task)) = queue.lock().unwrap().pop_front() else {
                 break;
             };
-            reporter.task_started(key.as_ref());
-            let result = function(task);
-            reporter.task_finished(key.as_ref());
+            let result = function(&key, task);
             sender.send((key, result)).unwrap();
         }));
     }
@@ -380,7 +453,6 @@ where
     for worker in workers {
         worker.join().unwrap();
     }
-    reporter.finish();
     results
 }
 
@@ -400,8 +472,9 @@ fn count_derived_recalculations(pins: &pins::PinsFile, probe_results: &BTreeMap<
         .map(|(name, probe)| {
             let previous = pins.pins.get(name);
             probe
-                .derived
-                .iter()
+                .package_derived()
+                .values()
+                .flat_map(|derived| derived.iter())
                 .filter(|(key, fingerprint)| previous.and_then(|pin| pin.fingerprints.get(*key)) != Some(*fingerprint))
                 .count()
         })

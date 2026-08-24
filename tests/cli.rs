@@ -440,7 +440,10 @@ esac
 "#,
     );
     let second = run(&dir.0, &["update"]);
-    assert!(second.status.success(), "{}", String::from_utf8_lossy(&second.stderr));
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(second.status.success(), "{stderr}");
+    assert!(stderr.contains("Reused vendorHash"), "{stderr}");
+    assert!(stderr.contains("Reused npmDepsHash"), "{stderr}");
 }
 
 #[test]
@@ -488,6 +491,8 @@ esac
     assert!(!output.status.success());
     assert!(stderr.contains("package-lock.json file does not exist"));
     assert!(stderr.contains("postPatch"));
+    assert!(stderr.contains("Failed · npmDepsHash"), "{stderr}");
+    assert!(!stderr.contains("default/npmDepsHash"), "{stderr}");
 }
 
 #[test]
@@ -1010,7 +1015,10 @@ esac
     );
 
     let output = run(&dir.0, &["update"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1));
+    assert!(stderr.contains("✗ Resolving sources · 1 pins"), "{stderr}");
+    assert!(!stderr.contains("✗ demo"), "{stderr}");
     assert_eq!(fs::read(dir.0.join("pins.json")).unwrap(), original);
 }
 
@@ -1047,4 +1055,45 @@ esac
         fs::metadata(dir.0.join("pins.json")).unwrap().modified().unwrap(),
         modified
     );
+}
+
+#[test]
+fn update_consumes_internal_json_without_leaking_activity_urls() {
+    let _serial = serial();
+    let dir = TempDir::new("internal-json");
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
+    write_executable(
+        &dir.0.join("nix"),
+        r#"#!/bin/sh
+case "$1" in
+  eval)
+    case "$*" in
+      *p.check*) printf '%s\n' '{"demo":{"cmd":"printf v1"}}' ;;
+      *p.fetchSrc.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo.drv","fetcher":{"url":{"url":"https://example.invalid/demo"}},"derived":{},"packages":{}}}' ;;
+    esac
+    ;;
+  build)
+    case "$*" in
+      *"--log-format internal-json"*) ;;
+      *) printf '%s\n' 'missing internal-json log format' >&2; exit 99 ;;
+    esac
+    printf '%s\n' '@nix {"action":"start","id":1,"type":101,"fields":["https://secret.invalid/archive"]}' >&2
+    printf '%s\n' '@nix {"action":"result","id":1,"type":105,"fields":[1048576,2097152,0,0]}' >&2
+    printf '%s\n' '@nix {"action":"msg","level":0,"msg":"got: sha256-demo"}' >&2
+    exit 1
+    ;;
+esac
+"#,
+    );
+
+    let output = run(&dir.0, &["update"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("demo — v1 Hashing source"), "{stderr}");
+    assert!(stderr.contains("✓ demo — v1 Done"), "{stderr}");
+    assert!(stderr.contains("✓ Writing pins.json"), "{stderr}");
+    assert!(!stderr.contains("secret.invalid"), "{stderr}");
+    assert!(!stderr.contains("@nix"), "{stderr}");
+    assert!(!stderr.contains("\u{1b}"), "{stderr}");
 }

@@ -193,22 +193,25 @@
       if builtins.length sameType == 1
       then base
       else "${packageName}.${base}";
-    packages =
-      builtins.mapAttrs
+      packages =
+        builtins.mapAttrs
         (packageName: builders.evaluate pinName packageName (hashName packageName) locked src)
-      normalized.packages;
-    derived =
-      builtins.foldl'
-      (result: packageName:
-        result // builders.derived pinName packageName (hashName packageName) normalized.packages.${packageName} packages.${packageName})
-      {}
-      packageNames;
+        normalized.packages;
+      packageDerived =
+        builtins.mapAttrs
+        (packageName: _: builders.derived pinName packageName (hashName packageName) normalized.packages.${packageName} packages.${packageName})
+        normalized.packages;
+      derived =
+        builtins.foldl'
+        (result: packageName: result // packageDerived.${packageName})
+        {}
+        packageNames;
   in {
     check = assert valid; check;
     inherit (fetched) fetcher;
     fetchSrc = fetched.src;
     inherit src;
-    inherit derived packages;
+      inherit derived packageDerived packages;
   };
 in
   builtins.mapAttrs evaluatePin declarations

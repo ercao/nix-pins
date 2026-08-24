@@ -25,21 +25,236 @@ pub fn eval_json(expr: &str) -> Result<serde_json::Value, Error> {
     serde_json::from_slice(&out.stdout).map_err(|e| Error::Nix(e.to_string()))
 }
 
-/// 构建一个注定失败的 FOD，从失败输出中取回真实哈希（ADR-0003、ADR-0011）。
-pub fn resolve_hash(drv_path: &str) -> Result<String, Error> {
-    let out = Command::new("nix")
-        .args(["build", "--no-link", "-L", &format!("{drv_path}^out")])
-        .output()
-        .map_err(|e| Error::Nix(e.to_string()))?;
-    // 退出码不可作为判据：404 的 fetchurl 曾以 0 退出且无 got 行（ADR-0003）。
-    let mut log = String::from_utf8_lossy(&out.stderr).into_owned();
-    if !out.stdout.is_empty() {
-        if !log.is_empty() && !log.ends_with('\n') {
-            log.push('\n');
+#[derive(Debug)]
+enum Activity {
+    Copy,
+    Download { done: u64, total: Option<u64> },
+    Build { phase: Option<(u64, String)> },
+    Query,
+}
+
+#[derive(Default)]
+struct NixLog {
+    activities: std::collections::BTreeMap<u64, Activity>,
+    phase_sequence: u64,
+}
+
+impl NixLog {
+    fn push(&mut self, line: &str) -> Option<String> {
+        let Some(json) = line.strip_prefix("@nix ") else {
+            return Some(line.into());
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+            return Some(line.into());
+        };
+        let Some(action) = value.get("action").and_then(serde_json::Value::as_str) else {
+            return Some(line.into());
+        };
+        if action == "msg" {
+            return value
+                .get("msg")
+                .or_else(|| value.get("raw_msg"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| Some(line.into()));
         }
-        log.push_str(&String::from_utf8_lossy(&out.stdout));
+        let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) else {
+            return Some(line.into());
+        };
+        match action {
+            "start" => {
+                let activity = match value.get("type").and_then(serde_json::Value::as_u64) {
+                    Some(100) => Activity::Copy,
+                    Some(101) => Activity::Download { done: 0, total: None },
+                    Some(105) => Activity::Build { phase: None },
+                    Some(108) => Activity::Query,
+                    Some(_) => return Some(line.into()),
+                    None => return Some(line.into()),
+                };
+                self.activities.insert(id, activity);
+            }
+            "stop" => {
+                self.activities.remove(&id);
+            }
+            "result" => {
+                let Some(kind) = value.get("type").and_then(serde_json::Value::as_u64) else {
+                    return Some(line.into());
+                };
+                let fields = value.get("fields").and_then(serde_json::Value::as_array);
+                match (kind, self.activities.get_mut(&id), fields) {
+                    (105, Some(Activity::Download { done, total }), Some(fields)) => {
+                        *done = fields.first().and_then(serde_json::Value::as_u64).unwrap_or(*done);
+                        *total = fields
+                            .get(1)
+                            .and_then(serde_json::Value::as_u64)
+                            .filter(|value| *value > 0);
+                    }
+                    (104, Some(Activity::Build { phase }), Some(fields)) => {
+                        let Some(value) = fields.first().and_then(serde_json::Value::as_str) else {
+                            return Some(line.into());
+                        };
+                        self.phase_sequence += 1;
+                        *phase = Some((self.phase_sequence, value.into()));
+                    }
+                    (101, _, Some(fields)) => {
+                        return fields
+                            .first()
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                            .or_else(|| Some(line.into()));
+                    }
+                    (101 | 104 | 105, _, None) => return Some(line.into()),
+                    _ => return Some(line.into()),
+                }
+            }
+            _ => return Some(line.into()),
+        }
+        None
     }
-    parse_got(&log).ok_or(Error::NoGotLine(log))
+
+    fn detail(&self) -> Option<String> {
+        let downloads: Vec<_> = self
+            .activities
+            .values()
+            .filter_map(|activity| match activity {
+                Activity::Download { done, total } => Some((*done, *total)),
+                _ => None,
+            })
+            .collect();
+        if !downloads.is_empty() {
+            let done = downloads.iter().map(|(done, _)| done).sum::<u64>();
+            let transfers = downloads.len();
+            if downloads.iter().all(|(_, total)| total.is_some()) {
+                let total = downloads.iter().filter_map(|(_, total)| *total).sum::<u64>();
+                let percent = done.saturating_mul(100).checked_div(total).unwrap_or(0);
+                return Some(format!(
+                    "Downloading {}/{} MiB ({percent}%) · {transfers} {}",
+                    format_mib(done),
+                    format_mib(total),
+                    if transfers == 1 { "transfer" } else { "transfers" }
+                ));
+            }
+            return Some(format!(
+                "Downloading {} downloaded · {transfers} {}",
+                format_bytes(done),
+                if transfers == 1 { "transfer" } else { "transfers" }
+            ));
+        }
+        if self
+            .activities
+            .values()
+            .any(|activity| matches!(activity, Activity::Copy))
+        {
+            return Some("Copying Store Path".into());
+        }
+        if let Some((_, phase)) = self
+            .activities
+            .values()
+            .filter_map(|activity| match activity {
+                Activity::Build { phase } => phase.as_ref(),
+                _ => None,
+            })
+            .max_by_key(|(sequence, _)| *sequence)
+        {
+            return Some(phase.clone());
+        }
+        if self
+            .activities
+            .values()
+            .any(|activity| matches!(activity, Activity::Build { .. }))
+        {
+            return Some("Building".into());
+        }
+        self.activities
+            .values()
+            .any(|activity| matches!(activity, Activity::Query))
+            .then(|| "Querying Cache".into())
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    format!("{} MiB", format_mib(bytes))
+}
+
+fn format_mib(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    format!("{:.1}", bytes as f64 / MIB)
+}
+
+pub fn resolve_hash(drv_path: &str, mut progress: impl FnMut(Option<String>)) -> Result<String, Error> {
+    use std::io::{BufRead, BufReader, Read};
+    use std::process::Stdio;
+
+    let mut child = Command::new("nix")
+        .args([
+            "build",
+            "--no-link",
+            "-L",
+            "--log-format",
+            "internal-json",
+            &format!("{drv_path}^out"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| Error::Nix(error.to_string()))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Nix("无法读取 Nix stdout".into()))?;
+    let stdout = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::Nix("无法读取 Nix stderr".into()))?;
+    let mut state = NixLog::default();
+    let mut last_detail = None;
+    let mut diagnostics = String::new();
+    let mut stderr_error = None;
+    for line in BufReader::new(stderr).lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                stderr_error = Some(error);
+                break;
+            }
+        };
+        if let Some(line) = state.push(&line) {
+            diagnostics.push_str(&line);
+            diagnostics.push('\n');
+        }
+        let detail = state.detail();
+        if detail != last_detail {
+            progress(detail.clone());
+            last_detail = detail;
+        }
+    }
+    if stderr_error.is_some() {
+        let _ = child.kill();
+    }
+    let wait_result = child.wait();
+    let stdout = stdout.join();
+    progress(None);
+
+    if let Some(error) = stderr_error {
+        return Err(Error::Nix(error.to_string()));
+    }
+    wait_result.map_err(|error| Error::Nix(error.to_string()))?;
+    let stdout = stdout
+        .map_err(|_| Error::Nix("读取 Nix stdout 的线程异常退出".into()))?
+        .map_err(|error| Error::Nix(error.to_string()))?;
+    if !stdout.is_empty() {
+        if !diagnostics.is_empty() && !diagnostics.ends_with('\n') {
+            diagnostics.push('\n');
+        }
+        diagnostics.push_str(&String::from_utf8_lossy(&stdout));
+    }
+
+    // 退出码不可作为判据：404 的 fetchurl 曾以 0 退出且无 got 行（ADR-0003）。
+    parse_got(&diagnostics).ok_or(Error::NoGotLine(diagnostics))
 }
 
 /// 从 hash mismatch 输出中提取 got 行的哈希。
@@ -52,7 +267,7 @@ fn parse_got(log: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_got;
+    use super::{parse_got, NixLog};
 
     /// 实测样本，取自本机 Nix 2.35.2（ADR-0003）。
     const MISMATCH: &str = concat!(
@@ -85,5 +300,73 @@ mod tests {
     #[test]
     fn does_not_return_specified() {
         assert_ne!(parse_got(MISMATCH).as_deref(), Some(super::FAKE));
+    }
+
+    #[test]
+    fn internal_json_aggregates_downloads_without_exposing_urls() {
+        let mut log = NixLog::default();
+
+        assert_eq!(
+            log.push(r#"@nix {"action":"start","id":1,"type":101,"fields":["https://secret.invalid/a"]}"#),
+            None
+        );
+        assert_eq!(
+            log.push(r#"@nix {"action":"start","id":2,"type":101,"fields":["https://secret.invalid/b"]}"#),
+            None
+        );
+        log.push(r#"@nix {"action":"result","id":1,"type":105,"fields":[1048576,2097152,0,0]}"#);
+        log.push(r#"@nix {"action":"result","id":2,"type":105,"fields":[524288,1048576,0,0]}"#);
+
+        let detail = log.detail().unwrap();
+        assert_eq!(detail, "Downloading 1.5/3.0 MiB (50%) · 2 transfers");
+        assert!(!detail.contains("secret.invalid"));
+    }
+
+    #[test]
+    fn internal_json_omits_percentage_when_any_download_total_is_unknown() {
+        let mut log = NixLog::default();
+        log.push(r#"@nix {"action":"start","id":1,"type":101,"fields":["hidden"]}"#);
+        log.push(r#"@nix {"action":"result","id":1,"type":105,"fields":[1048576,0,0,0]}"#);
+
+        assert_eq!(
+            log.detail().as_deref(),
+            Some("Downloading 1.0 MiB downloaded · 1 transfer")
+        );
+    }
+
+    #[test]
+    fn internal_json_uses_fixed_detail_priority_and_preserves_diagnostics() {
+        let mut log = NixLog::default();
+
+        log.push(r#"@nix {"action":"start","id":1,"type":108,"fields":["cache"]}"#);
+        assert_eq!(log.detail().as_deref(), Some("Querying Cache"));
+        log.push(r#"@nix {"action":"start","id":2,"type":105,"fields":["/nix/store/demo.drv"]}"#);
+        assert_eq!(log.detail().as_deref(), Some("Building"));
+        log.push(r#"@nix {"action":"result","id":2,"type":104,"fields":["buildPhase"]}"#);
+        assert_eq!(log.detail().as_deref(), Some("buildPhase"));
+        log.push(r#"@nix {"action":"start","id":5,"type":105,"fields":["/nix/store/newer.drv"]}"#);
+        log.push(r#"@nix {"action":"result","id":5,"type":104,"fields":["installPhase"]}"#);
+        assert_eq!(log.detail().as_deref(), Some("installPhase"));
+        log.push(r#"@nix {"action":"stop","id":5}"#);
+        assert_eq!(log.detail().as_deref(), Some("buildPhase"));
+        log.push(r#"@nix {"action":"start","id":3,"type":100,"fields":["from","to"]}"#);
+        assert_eq!(log.detail().as_deref(), Some("Copying Store Path"));
+        log.push(r#"@nix {"action":"start","id":4,"type":101,"fields":["https://secret.invalid"]}"#);
+        assert!(log.detail().unwrap().starts_with("Downloading"));
+
+        assert_eq!(
+            log.push(r#"@nix {"action":"msg","level":0,"msg":"got: sha256-real"}"#),
+            Some("got: sha256-real".into())
+        );
+        assert_eq!(
+            log.push(r#"@nix {"action":"start","id":9}"#),
+            Some(r#"@nix {"action":"start","id":9}"#.into())
+        );
+        assert_eq!(
+            log.push(r#"@nix {"action":"start","id":9,"type":999}"#),
+            Some(r#"@nix {"action":"start","id":9,"type":999}"#.into())
+        );
+        assert_eq!(log.push("ordinary diagnostic"), Some("ordinary diagnostic".into()));
+        assert_eq!(log.push("@nix {broken"), Some("@nix {broken".into()));
     }
 }

@@ -14,7 +14,21 @@ pub struct ProbeResult {
     pub src: String,
     pub fetcher: Fetcher,
     /// derived hash 名 → 承载它的中间 FOD drvPath（ADR-0011）。
+    #[serde(default)]
     pub derived: BTreeMap<String, String>,
+    /// Package 名 → derived hash 名 → 中间 FOD drvPath（ADR-0020）。
+    #[serde(default)]
+    pub packages: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl ProbeResult {
+    pub fn package_derived(&self) -> BTreeMap<String, BTreeMap<String, String>> {
+        if self.packages.is_empty() && !self.derived.is_empty() {
+            BTreeMap::from([("default".into(), self.derived.clone())])
+        } else {
+            self.packages.clone()
+        }
+    }
 }
 
 /// 阶段一：列出各 Pin 的 checker 声明。pins 传空集。
@@ -56,7 +70,7 @@ pub fn probe_drvs(
              all = import {evaluator} {{ inherit pkgs pins; config = {config}; fake = \"{FAKE}\"; }}; \
              cfg = builtins.listToAttrs (map (name: {{ inherit name; value = all.${{name}}; }}) (builtins.attrNames pins)); \
          in builtins.mapAttrs (n: p: \
-            {{ src = p.fetchSrc.drvPath; inherit (p) fetcher derived; }}) cfg"
+            {{ src = p.fetchSrc.drvPath; inherit (p) fetcher derived; packages = p.packageDerived; }}) cfg"
     );
     let value = nix::eval_json(&expr)?;
     serde_json::from_value(value).map_err(|error| nix::Error::Nix(error.to_string()))
@@ -178,6 +192,8 @@ mod tests {
         );
         assert!(locked_source["cpa-manager-plus"].derived.contains_key("vendorHash"));
         assert!(locked_source["cpa-manager-plus"].derived.contains_key("npmDepsHash"));
+        assert!(locked_source["cpa-manager-plus"].packages["manager-server"].contains_key("vendorHash"));
+        assert!(locked_source["cpa-manager-plus"].packages["web"].contains_key("npmDepsHash"));
     }
 
     #[test]
@@ -442,7 +458,7 @@ in {selection}"#
     }};
   }};
 in {{
-  inherit (cfg.demo) derived;
+  inherit (cfg.demo) derived packageDerived;
   apiHash = cfg.demo.packages.api.vendorHash;
   cliHash = cfg.demo.packages.cli.vendorHash;
 }}"#
@@ -455,6 +471,13 @@ in {{
             serde_json::json!({
                 "api.vendorHash": "/nix/store/demo-api-go-modules.drv",
                 "cli.vendorHash": "/nix/store/demo-cli-go-modules.drv"
+            })
+        );
+        assert_eq!(
+            result["packageDerived"],
+            serde_json::json!({
+                "api": { "api.vendorHash": "/nix/store/demo-api-go-modules.drv" },
+                "cli": { "cli.vendorHash": "/nix/store/demo-cli-go-modules.drv" }
             })
         );
         assert_eq!(result["apiHash"], "api-hash");
