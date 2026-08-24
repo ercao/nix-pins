@@ -490,10 +490,18 @@ impl Renderer {
         let symbol = if success { "✓" } else { "✗" };
         let step = if success { "Done" } else { "Failed" };
         let suffix = detail.map(|detail| format!(" · {detail}")).unwrap_or_default();
-        let _ = self.multi.println(format!(
+        let line = format!(
             "{symbol} {name} {} {} {step}{suffix}",
             versions.current, versions.target
-        ));
+        );
+        let line = if success && versions.current == versions.target {
+            format!("\x1b[2m{line}\x1b[0m")
+        } else if success {
+            format!("\x1b[32m{line}\x1b[0m")
+        } else {
+            line
+        };
+        let _ = self.multi.println(line);
     }
 
     fn clear_operation(&mut self) {
@@ -670,6 +678,31 @@ mod tests {
             "{}",
             term.contents()
         );
+    }
+
+    #[test]
+    fn renderer_highlights_updates_and_dims_unchanged_pins() {
+        let term = InMemoryTerm::new(8, 100);
+        let mut renderer = Renderer::new(ProgressDrawTarget::term_like(Box::new(term.clone())));
+
+        for (name, current, target) in [("updated", "1.0.0", "1.1.0"), ("unchanged", "2.0.0", "2.0.0")] {
+            renderer.apply(Event::PinDeclared {
+                name: name.into(),
+                current: current.into(),
+            });
+            renderer.apply(Event::TargetSelected {
+                name: name.into(),
+                target: target.into(),
+            });
+            renderer.apply(Event::PinDone {
+                name: name.into(),
+                packages: None,
+            });
+        }
+
+        let contents = String::from_utf8(term.contents_formatted()).unwrap();
+        assert!(contents.contains("\x1b[32m✓ updated"), "{contents:?}");
+        assert!(contents.contains("\x1b[2m✓ unchanged"), "{contents:?}");
     }
 
     #[test]
