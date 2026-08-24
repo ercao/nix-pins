@@ -7,10 +7,22 @@ use std::path::PathBuf;
 #[command(name = "nix-pins", version, about = "Lock Nix package versions")]
 struct Cli {
     /// 包含 Pin 声明的 Nix 配置。
-    #[arg(long, global = true, value_name = "PATH", default_value = "./pins-config.nix")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        env = "NIX_PINS_CONFIG",
+        default_value = "./pins-config.nix"
+    )]
     config: PathBuf,
     /// 命令读取与更新的 Pins File。
-    #[arg(long, global = true, value_name = "PATH", default_value = "./pins.json")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        env = "NIX_PINS_FILE",
+        default_value = "./pins.json"
+    )]
     pins: PathBuf,
     #[command(subcommand)]
     command: Option<CliCommand>,

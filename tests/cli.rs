@@ -890,6 +890,32 @@ fn global_config_and_pins_paths_are_relocatable() {
 }
 
 #[test]
+fn config_and_pins_paths_can_come_from_the_environment() {
+    let _serial = serial();
+    let dir = TempDir::new("path-env");
+    fs::create_dir_all(dir.0.join("config")).unwrap();
+    fs::create_dir_all(dir.0.join("state")).unwrap();
+    fs::write(dir.0.join("config/custom.nix"), "{ pin }: {}\n").unwrap();
+
+    let output = run_with_env(
+        &dir.0,
+        &["status"],
+        &[
+            ("NIX_PINS_CONFIG", "config/custom.nix"),
+            ("NIX_PINS_FILE", "state/custom.json"),
+        ],
+    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+
+    let output = run_with_env(
+        &dir.0,
+        &["--config", "config/custom.nix", "--pins", "state/custom.json", "status"],
+        &[("NIX_PINS_CONFIG", "missing.nix"), ("NIX_PINS_FILE", "missing.json")],
+    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
 fn selectors_reject_unknown_names_and_filter_only_zero_matches() {
     let _serial = serial();
     let dir = TempDir::new("strict-selection");
