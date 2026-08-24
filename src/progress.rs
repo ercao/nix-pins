@@ -510,7 +510,7 @@ impl Renderer {
 }
 
 fn spinner_style() -> ProgressStyle {
-    ProgressStyle::with_template("{spinner} {wide_msg}")
+    ProgressStyle::with_template("{spinner} {msg}")
         .unwrap()
         .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ")
 }
