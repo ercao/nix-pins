@@ -65,11 +65,7 @@ impl PinsFile {
 
     pub fn transaction(path: &Path) -> std::io::Result<Transaction> {
         let lock_path = lock_path(path);
-        let lock = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(lock_path)?;
+        let lock = OpenOptions::new().create(true).read(true).write(true).open(lock_path)?;
         lock.lock_exclusive()?;
         let original = match std::fs::read(path) {
             Ok(bytes) => Some(bytes),
@@ -126,10 +122,7 @@ impl Transaction {
         }
         let temp_path = temporary_path(&self.path);
         let result = (|| {
-            let mut temp = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temp_path)?;
+            let mut temp = OpenOptions::new().create_new(true).write(true).open(&temp_path)?;
             temp.write_all(&bytes)?;
             temp.sync_all()?;
             drop(temp);
@@ -240,10 +233,7 @@ mod tests {
         let mut unchanged = PinsFile::transaction(&path).unwrap();
         unchanged.save().unwrap();
         drop(unchanged);
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().modified().unwrap(),
-            modified
-        );
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), modified);
         let loaded = PinsFile::load(&path).unwrap();
         assert_eq!(loaded.pins["curlie"].version, "v1.8.2");
 

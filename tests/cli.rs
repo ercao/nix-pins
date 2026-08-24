@@ -12,10 +12,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path = std::env::temp_dir().join(format!("nix-pins-{name}-{nonce}"));
         fs::create_dir_all(&path).unwrap();
         Self(path)
@@ -42,10 +39,10 @@ fn run(dir: &Path, args: &[&str]) -> std::process::Output {
 fn run_with_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     let path = std::env::var_os("PATH").unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_nix-pins"));
-    command.args(args).current_dir(dir).env(
-        "PATH",
-        format!("{}:{}", dir.display(), path.to_string_lossy()),
-    );
+    command
+        .args(args)
+        .current_dir(dir)
+        .env("PATH", format!("{}:{}", dir.display(), path.to_string_lossy()));
     for (key, value) in env {
         command.env(key, value);
     }
@@ -90,11 +87,7 @@ esac
 
     let output = run(&dir.0, &["update"]);
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert_eq!(pins["schemaVersion"], 1);
     assert_eq!(pins["pins"]["demo"]["version"], "v1.2.3");
@@ -130,10 +123,7 @@ fn orthogonal_public_dsl_updates_the_pins_file() {
 "#,
     )
     .unwrap();
-    let nix = Command::new("sh")
-        .args(["-c", "command -v nix"])
-        .output()
-        .unwrap();
+    let nix = Command::new("sh").args(["-c", "command -v nix"]).output().unwrap();
     assert!(nix.status.success());
     let nix = String::from_utf8(nix.stdout).unwrap();
     write_executable(
@@ -155,11 +145,7 @@ esac
     );
 
     let output = run(&dir.0, &["update"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert_eq!(pins["pins"]["demo"]["version"], "v1.2.3");
     assert_eq!(
@@ -234,10 +220,7 @@ esac
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("\u{1b}"), "{stderr}");
     assert!(stderr.contains("Processed 2 pins; 1 failed"), "{stderr}");
-    assert!(
-        stderr.contains("nix-pins: update completed with failures:"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("nix-pins: update completed with failures:"), "{stderr}");
     assert!(stderr.contains("bad"), "{stderr}");
     assert!(stderr.contains("checker-failed"), "{stderr}");
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
@@ -328,11 +311,7 @@ esac
     let output = run(&dir.0, &["status"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(stdout.contains("bad v1"));
     assert!(stdout.contains("rate limit exhausted"));
     assert!(stdout.contains("good v2"));
@@ -383,11 +362,7 @@ esac
 
     let output = run(&dir.0, &["update"]);
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert_eq!(pins["pins"]["demo"]["hash"], "sha256-existing");
 }
@@ -433,17 +408,10 @@ esac
     );
 
     let first = run(&dir.0, &["update"]);
-    assert!(
-        first.status.success(),
-        "{}",
-        String::from_utf8_lossy(&first.stderr)
-    );
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert_eq!(pins["pins"]["demo"]["hash"], "sha256-source");
-    assert_eq!(
-        pins["pins"]["demo"]["derived"]["vendorHash"],
-        "sha256-vendor"
-    );
+    assert_eq!(pins["pins"]["demo"]["derived"]["vendorHash"], "sha256-vendor");
     assert_eq!(pins["pins"]["demo"]["derived"]["npmDepsHash"], "sha256-npm");
     assert_eq!(
         pins["pins"]["demo"]["fingerprints"]["vendorHash"],
@@ -472,11 +440,7 @@ esac
 "#,
     );
     let second = run(&dir.0, &["update"]);
-    assert!(
-        second.status.success(),
-        "{}",
-        String::from_utf8_lossy(&second.stderr)
-    );
+    assert!(second.status.success(), "{}", String::from_utf8_lossy(&second.stderr));
 }
 
 #[test]
@@ -573,11 +537,7 @@ fn reader_dispatches_github_and_git_fetchers() {
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["github"]["kind"], "github");
     assert_eq!(value["github"]["pname"], "github");
@@ -617,10 +577,7 @@ esac
             match listener.accept() {
                 Ok((stream, _)) => break stream,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "Checker made no HTTP request"
-                    );
+                    assert!(std::time::Instant::now() < deadline, "Checker made no HTTP request");
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 Err(error) => panic!("{error}"),
@@ -653,11 +610,7 @@ esac
     );
     server.join().unwrap();
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("secret-token"));
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert_eq!(pins["pins"]["demo"]["version"], "v9");
@@ -702,10 +655,7 @@ printf 'one\trefs/tags/v1.9.0\ntwo\trefs/tags/v1.10.0\n'
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "Checker made no HTTP request"
-                        );
+                        assert!(std::time::Instant::now() < deadline, "Checker made no HTTP request");
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                     Err(error) => panic!("{error}"),
@@ -737,18 +687,11 @@ printf 'one\trefs/tags/v1.9.0\ntwo\trefs/tags/v1.10.0\n'
     let output = run_with_env(
         &dir.0,
         &["update"],
-        &[
-            ("NIX_PINS_CRATES_API_BASE", &base),
-            ("NIX_PINS_PYPI_API_BASE", &base),
-        ],
+        &[("NIX_PINS_CRATES_API_BASE", &base), ("NIX_PINS_PYPI_API_BASE", &base)],
     );
     server.join().unwrap();
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert_eq!(pins["pins"]["crate"]["version"], "2.3.4");
     assert_eq!(pins["pins"]["git"]["version"], "v1.10.0");
@@ -829,11 +772,7 @@ esac
     let output = run(&dir.0, &["update"]);
     let elapsed = started.elapsed();
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(
         elapsed < std::time::Duration::from_millis(3200),
         "Checker stage took {elapsed:?}"
@@ -875,11 +814,7 @@ esac
 
     let output = run_with_env(&dir.0, &["update"], &[("NIX_PINS_HASH_JOBS", "2")]);
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
@@ -907,11 +842,7 @@ esac
 
     let output = run(&dir.0, &["update", "--filter", "^alpha$"]);
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert!(pins["pins"].get("alpha").is_some());
     assert!(pins["pins"].get("beta").is_none());
@@ -922,11 +853,7 @@ fn clap_help_version_and_errors_use_standard_exit_codes() {
     let dir = TempDir::new("clap");
 
     let help = run(&dir.0, &["--help"]);
-    assert!(
-        help.status.success(),
-        "{}",
-        String::from_utf8_lossy(&help.stderr)
-    );
+    assert!(help.status.success(), "{}", String::from_utf8_lossy(&help.stderr));
     let help = String::from_utf8_lossy(&help.stdout);
     assert!(help.contains("Usage:"), "{help}");
     assert!(help.contains("update"), "{help}");
@@ -951,20 +878,10 @@ fn global_config_and_pins_paths_are_relocatable() {
 
     let output = run(
         &dir.0,
-        &[
-            "--config",
-            "config/custom.nix",
-            "status",
-            "--pins",
-            "state/custom.json",
-        ],
+        &["--config", "config/custom.nix", "status", "--pins", "state/custom.json"],
     );
 
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
@@ -1050,11 +967,7 @@ esac
     assert!(pins["failures"].get("removed").is_some());
 
     let full = run(&dir.0, &["update"]);
-    assert!(
-        full.status.success(),
-        "{}",
-        String::from_utf8_lossy(&full.stderr)
-    );
+    assert!(full.status.success(), "{}", String::from_utf8_lossy(&full.stderr));
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert!(pins["pins"].get("removed").is_none());
     assert!(pins.get("failures").is_none());
@@ -1076,10 +989,7 @@ printf '%s\n' '{"demo":{"cmd":"printf failed >&2; exit 1"}}'
     assert_eq!(output.status.code(), Some(1));
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert!(pins["pins"].get("demo").is_none());
-    assert!(pins["failures"]["demo"]
-        .as_str()
-        .unwrap()
-        .contains("failed"));
+    assert!(pins["failures"]["demo"].as_str().unwrap().contains("failed"));
 }
 
 #[test]
@@ -1129,18 +1039,12 @@ esac
 
     let first = run(&dir.0, &["update"]);
     assert!(first.status.success());
-    let modified = fs::metadata(dir.0.join("pins.json"))
-        .unwrap()
-        .modified()
-        .unwrap();
+    let modified = fs::metadata(dir.0.join("pins.json")).unwrap().modified().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
     let second = run(&dir.0, &["update"]);
     assert!(second.status.success());
     assert_eq!(
-        fs::metadata(dir.0.join("pins.json"))
-            .unwrap()
-            .modified()
-            .unwrap(),
+        fs::metadata(dir.0.join("pins.json")).unwrap().modified().unwrap(),
         modified
     );
 }

@@ -48,10 +48,8 @@ pub fn probe_drvs(
             (name, pin)
         })
         .collect();
-    let pins_json =
-        serde_json::to_string(&pins).map_err(|error| nix::Error::Nix(error.to_string()))?;
-    let pins_nix =
-        serde_json::to_string(&pins_json).map_err(|error| nix::Error::Nix(error.to_string()))?;
+    let pins_json = serde_json::to_string(&pins).map_err(|error| nix::Error::Nix(error.to_string()))?;
+    let pins_nix = serde_json::to_string(&pins_json).map_err(|error| nix::Error::Nix(error.to_string()))?;
     let expr = format!(
         "let pkgs = import <nixpkgs> {{}}; \
              pins = builtins.fromJSON {pins_nix}; \
@@ -66,8 +64,7 @@ pub fn probe_drvs(
 
 fn config_path(config: &str) -> Result<String, nix::Error> {
     let path = std::fs::canonicalize(config).map_err(|error| nix::Error::Nix(error.to_string()))?;
-    serde_json::to_string(&path.to_string_lossy())
-        .map_err(|error| nix::Error::Nix(error.to_string()))
+    serde_json::to_string(&path.to_string_lossy()).map_err(|error| nix::Error::Nix(error.to_string()))
 }
 
 fn evaluator_path() -> Result<String, nix::Error> {
@@ -85,14 +82,8 @@ mod tests {
 
     #[test]
     fn probes_real_github_go_and_npm_derivations() {
-        let versions = BTreeMap::from([
-            ("curlie".into(), "v1.8.2".into()),
-            ("sloc".into(), "0.3.2".into()),
-        ]);
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/examples/example1/pins-config.nix"
-        );
+        let versions = BTreeMap::from([("curlie".into(), "v1.8.2".into()), ("sloc".into(), "0.3.2".into())]);
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example1/pins-config.nix");
 
         let results = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
 
@@ -104,10 +95,7 @@ mod tests {
     #[test]
     fn declarative_github_go_pin_evaluates_through_the_public_nix_seam() {
         let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/declarative-go.nix"
-        );
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/declarative-go.nix");
         let expr = format!(
             r#"let
   pkgs = {{
@@ -157,10 +145,7 @@ mod tests {
 
     #[test]
     fn probes_declarative_github_go_pins_through_the_cli_seam() {
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/declarative-go.nix"
-        );
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/declarative-go.nix");
 
         let checks = probe_checks(config).unwrap();
         let results = probe_drvs(
@@ -182,10 +167,7 @@ mod tests {
             "cpa-manager-plus".into(),
             "sha256-tq5F5NgKyahsYOmv5NDF1TMwc5OfTx18aCd2PyrvTNM=".into(),
         )]);
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/examples/example2/pins-config.nix"
-        );
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins-config.nix");
 
         let fake_source = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
         let locked_source = probe_drvs(config, &versions, &hashes).unwrap();
@@ -194,21 +176,14 @@ mod tests {
             fake_source["cpa-manager-plus"].derived,
             locked_source["cpa-manager-plus"].derived
         );
-        assert!(locked_source["cpa-manager-plus"]
-            .derived
-            .contains_key("vendorHash"));
-        assert!(locked_source["cpa-manager-plus"]
-            .derived
-            .contains_key("npmDepsHash"));
+        assert!(locked_source["cpa-manager-plus"].derived.contains_key("vendorHash"));
+        assert!(locked_source["cpa-manager-plus"].derived.contains_key("npmDepsHash"));
     }
 
     #[test]
     fn locked_evaluator_exposes_named_go_and_npm_packages() {
         let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/examples/example2/pins-config.nix"
-        );
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins-config.nix");
         let expr = format!(
             r#"let
   pkgs = import <nixpkgs> {{}};
@@ -234,19 +209,13 @@ in {{
             .as_str()
             .unwrap()
             .contains("cpa-manager-plus-manager-server-v1.12.1"));
-        assert!(result["web"]
-            .as_str()
-            .unwrap()
-            .contains("cpa-manager-plus-web-v1.12.1"));
+        assert!(result["web"].as_str().unwrap().contains("cpa-manager-plus-web-v1.12.1"));
     }
 
     #[test]
     fn pins_file_entry_exposes_named_packages() {
         let packages = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/packages.nix");
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/examples/example2/pins-config.nix"
-        );
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins-config.nix");
         let pins_file = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins.json");
         let expr = format!(
             r#"let
@@ -272,10 +241,7 @@ in {{
             .as_str()
             .unwrap()
             .contains("cpa-manager-plus-manager-server-v1.12.1"));
-        assert!(result["web"]
-            .as_str()
-            .unwrap()
-            .contains("cpa-manager-plus-web-v1.12.1"));
+        assert!(result["web"].as_str().unwrap().contains("cpa-manager-plus-web-v1.12.1"));
         assert_eq!(result["hasNpmDeps"], true);
         assert_eq!(result["hasGoModules"], true);
     }
@@ -283,15 +249,9 @@ in {{
     #[test]
     fn declarative_errors_name_the_pin_and_package() {
         let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/invalid-declarations.nix"
-        );
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/invalid-declarations.nix");
         let cases = [
-            (
-                "cfg.missing-owner.check",
-                ["pin 'missing-owner'", "field 'owner'"],
-            ),
+            ("cfg.missing-owner.check", ["pin 'missing-owner'", "field 'owner'"]),
             (
                 "cfg.unsupported-fetcher.check",
                 ["pin 'unsupported-fetcher'", "fetcher 'gitlab'"],
@@ -349,10 +309,7 @@ in {selection}"#
 
     #[test]
     fn fetcher_mapping_is_validated_with_checks() {
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/non-string-fetcher.nix"
-        );
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/non-string-fetcher.nix");
         let error = match probe_checks(config).unwrap_err() {
             nix::Error::NoGotLine(error) | nix::Error::Nix(error) => error,
         };
@@ -363,19 +320,10 @@ in {selection}"#
 
     #[test]
     fn orthogonal_fetchers_apply_default_and_custom_version_mappings() {
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/orthogonal-fetchers.nix"
-        );
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/orthogonal-fetchers.nix");
         let checks = probe_checks(config).unwrap();
-        assert!(matches!(
-            checks["git-default"],
-            crate::checker::Checker::Cmd(_)
-        ));
-        assert!(matches!(
-            checks["git-mapped"],
-            crate::checker::Checker::Crate(_)
-        ));
+        assert!(matches!(checks["git-default"], crate::checker::Checker::Cmd(_)));
+        assert!(matches!(checks["git-mapped"], crate::checker::Checker::Crate(_)));
         assert!(matches!(checks["url"], crate::checker::Checker::Pypi(_)));
 
         let versions = BTreeMap::from([
@@ -408,31 +356,16 @@ in {selection}"#
 
     #[test]
     fn orthogonal_git_and_url_fetchers_evaluate_through_the_public_nix_seam() {
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/declarative-orthogonal.nix"
-        );
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/declarative-orthogonal.nix");
         let checks = probe_checks(config).unwrap();
-        assert!(matches!(
-            checks["git-source"],
-            crate::checker::Checker::Cmd(_)
-        ));
-        assert!(matches!(
-            checks["url-source"],
-            crate::checker::Checker::Pypi(_)
-        ));
-        assert!(matches!(
-            checks["npm-source"],
-            crate::checker::Checker::Npm(_)
-        ));
+        assert!(matches!(checks["git-source"], crate::checker::Checker::Cmd(_)));
+        assert!(matches!(checks["url-source"], crate::checker::Checker::Pypi(_)));
+        assert!(matches!(checks["npm-source"], crate::checker::Checker::Npm(_)));
         assert!(matches!(
             checks["git-checker-url-source"],
             crate::checker::Checker::Git(_)
         ));
-        assert!(matches!(
-            checks["crate-git-source"],
-            crate::checker::Checker::Crate(_)
-        ));
+        assert!(matches!(checks["crate-git-source"], crate::checker::Checker::Crate(_)));
 
         let versions = BTreeMap::from([
             ("git-source".into(), "v1.2.3".into()),
@@ -489,10 +422,7 @@ in {selection}"#
     #[test]
     fn multiple_same_type_packages_get_stable_derived_hash_names() {
         let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
-        let config = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/declarative-multi-go.nix"
-        );
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/declarative-multi-go.nix");
         let expr = format!(
             r#"let
   pkgs = {{
@@ -566,10 +496,7 @@ in {{
 
         let result = nix::eval_json(&expr).unwrap();
 
-        assert_eq!(
-            result["check"],
-            serde_json::json!({"github": "versions/demo"})
-        );
+        assert_eq!(result["check"], serde_json::json!({"github": "versions/demo"}));
         assert_eq!(
             result["fetcher"],
             serde_json::json!({

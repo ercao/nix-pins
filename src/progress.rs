@@ -269,17 +269,13 @@ mod tests {
             stage: Stage::Checking,
             total: 2,
         });
-        renderer.apply(Event::TaskStarted {
-            name: "ripgrep".into(),
-        });
+        renderer.apply(Event::TaskStarted { name: "ripgrep".into() });
 
         let active = term.contents();
         assert!(active.contains("Checking versions"), "{active}");
         assert!(active.contains("ripgrep"), "{active}");
 
-        renderer.apply(Event::TaskFinished {
-            name: "ripgrep".into(),
-        });
+        renderer.apply(Event::TaskFinished { name: "ripgrep".into() });
         renderer.apply(Event::StageFinished);
 
         assert_eq!(term.contents(), "");

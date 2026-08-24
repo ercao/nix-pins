@@ -7,20 +7,10 @@ use std::path::PathBuf;
 #[command(name = "nix-pins", version, about = "Lock Nix package versions")]
 struct Cli {
     /// 包含 Pin 声明的 Nix 配置。
-    #[arg(
-        long,
-        global = true,
-        value_name = "PATH",
-        default_value = "./pins-config.nix"
-    )]
+    #[arg(long, global = true, value_name = "PATH", default_value = "./pins-config.nix")]
     config: PathBuf,
     /// 命令读取与更新的 Pins File。
-    #[arg(
-        long,
-        global = true,
-        value_name = "PATH",
-        default_value = "./pins.json"
-    )]
+    #[arg(long, global = true, value_name = "PATH", default_value = "./pins.json")]
     pins: PathBuf,
     #[command(subcommand)]
     command: Option<CliCommand>,
@@ -74,10 +64,7 @@ impl Selection {
     pub fn matches(&self, name: &str) -> bool {
         (self.names.is_empty() && self.filter.is_none())
             || self.names.iter().any(|selected| selected == name)
-            || self
-                .filter
-                .as_ref()
-                .is_some_and(|filter| filter.is_match(name))
+            || self.filter.as_ref().is_some_and(|filter| filter.is_match(name))
     }
 
     pub fn validate<'a>(&self, names: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
@@ -91,10 +78,7 @@ impl Selection {
         if !missing.is_empty() {
             return Err(format!("unknown pin name(s): {}", missing.join(", ")));
         }
-        if self.names.is_empty()
-            && self.filter.is_some()
-            && !names.iter().any(|name| self.matches(name))
-        {
+        if self.names.is_empty() && self.filter.is_some() && !names.iter().any(|name| self.matches(name)) {
             return Err("filter matched no pins".into());
         }
         Ok(())
@@ -111,9 +95,7 @@ where
     T: Into<std::ffi::OsString> + Clone,
 {
     let cli = Cli::try_parse_from(args)?;
-    let command = cli
-        .command
-        .unwrap_or(CliCommand::Status(SelectionArgs::default()));
+    let command = cli.command.unwrap_or(CliCommand::Status(SelectionArgs::default()));
 
     let command = match command {
         CliCommand::Update(selection) => selection.parse().map(Command::Update),
@@ -174,10 +156,9 @@ mod tests {
 
     #[test]
     fn exact_names_and_filter_are_a_union() {
-        let Command::Update(selection) =
-            try_parse_from(["nix-pins", "update", "alpha", "--filter", "^beta$"])
-                .unwrap()
-                .command
+        let Command::Update(selection) = try_parse_from(["nix-pins", "update", "alpha", "--filter", "^beta$"])
+            .unwrap()
+            .command
         else {
             panic!("expected update");
         };
@@ -214,37 +195,24 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(
-            invocation.config,
-            std::path::PathBuf::from("config/custom.nix")
-        );
-        assert_eq!(
-            invocation.pins,
-            std::path::PathBuf::from("state/custom.json")
-        );
+        assert_eq!(invocation.config, std::path::PathBuf::from("config/custom.nix"));
+        assert_eq!(invocation.pins, std::path::PathBuf::from("state/custom.json"));
         assert!(matches!(invocation.command, Command::Update(_)));
     }
 
     #[test]
     fn strict_selection_rejects_unknown_names_and_empty_filters() {
-        let Command::Update(named) = try_parse_from(["nix-pins", "update", "missing"])
+        let Command::Update(named) = try_parse_from(["nix-pins", "update", "missing"]).unwrap().command else {
+            panic!("expected update");
+        };
+        assert!(named.validate(["demo"]).unwrap_err().contains("missing"));
+
+        let Command::Update(filtered) = try_parse_from(["nix-pins", "update", "--filter", "^missing$"])
             .unwrap()
             .command
         else {
             panic!("expected update");
         };
-        assert!(named.validate(["demo"]).unwrap_err().contains("missing"));
-
-        let Command::Update(filtered) =
-            try_parse_from(["nix-pins", "update", "--filter", "^missing$"])
-                .unwrap()
-                .command
-        else {
-            panic!("expected update");
-        };
-        assert!(filtered
-            .validate(["demo"])
-            .unwrap_err()
-            .contains("matched no pins"));
+        assert!(filtered.validate(["demo"]).unwrap_err().contains("matched no pins"));
     }
 }

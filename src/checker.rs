@@ -138,9 +138,7 @@ fn command_version(command: &str) -> Result<String, String> {
 }
 
 fn github_version(repository: &str, options: &Options) -> Result<String, String> {
-    let (owner, repo) = repository
-        .split_once('/')
-        .ok_or("github Checker expects owner/repo")?;
+    let (owner, repo) = repository.split_once('/').ok_or("github Checker expects owner/repo")?;
     let url = format!(
         "{}/repos/{owner}/{repo}/releases/latest",
         options.github_api_base.trim_end_matches('/')
@@ -171,15 +169,7 @@ fn github_version(repository: &str, options: &Options) -> Result<String, String>
 
 fn git_version(config: &GitChecker) -> Result<String, String> {
     let (url, mode, branch, reference, include, exclude, sort) = match config {
-        GitChecker::Url(url) => (
-            url.as_str(),
-            GitMode::Tag,
-            None,
-            None,
-            None,
-            None,
-            GitSort::Semver,
-        ),
+        GitChecker::Url(url) => (url.as_str(), GitMode::Tag, None, None, None, None, GitSort::Semver),
         GitChecker::Options(config) => (
             config.url.as_str(),
             config.mode,
@@ -194,23 +184,13 @@ fn git_version(config: &GitChecker) -> Result<String, String> {
     match mode {
         GitMode::Tag => {
             let output = git_remote_tags(url)?;
-            let include = include
-                .map(Regex::new)
-                .transpose()
-                .map_err(|error| error.to_string())?;
-            let exclude = exclude
-                .map(Regex::new)
-                .transpose()
-                .map_err(|error| error.to_string())?;
+            let include = include.map(Regex::new).transpose().map_err(|error| error.to_string())?;
+            let exclude = exclude.map(Regex::new).transpose().map_err(|error| error.to_string())?;
             output
                 .lines()
                 .filter_map(|line| line.split_once("refs/tags/").map(|(_, tag)| tag))
                 .filter(|tag| include.as_ref().is_none_or(|pattern| pattern.is_match(tag)))
-                .filter(|tag| {
-                    exclude
-                        .as_ref()
-                        .is_none_or(|pattern| !pattern.is_match(tag))
-                })
+                .filter(|tag| exclude.as_ref().is_none_or(|pattern| !pattern.is_match(tag)))
                 .max_by(|left, right| match sort {
                     GitSort::Semver => compare_tags(left, right),
                     GitSort::Lexicographic => left.cmp(right),
@@ -226,9 +206,7 @@ fn git_version(config: &GitChecker) -> Result<String, String> {
                 branch.ok_or("git Checker branch mode requires branch")?
             ),
         ),
-        GitMode::Ref => {
-            git_remote_version(url, reference.ok_or("git Checker ref mode requires ref")?)
-        }
+        GitMode::Ref => git_remote_version(url, reference.ok_or("git Checker ref mode requires ref")?),
     }
 }
 
@@ -268,28 +246,18 @@ fn git_remote_tags(url: &str) -> Result<String, String> {
 }
 
 fn crates_version(name: &str, options: &Options) -> Result<String, String> {
-    let url = format!(
-        "{}/api/v1/crates/{name}",
-        options.crates_api_base.trim_end_matches('/')
-    );
+    let url = format!("{}/api/v1/crates/{name}", options.crates_api_base.trim_end_matches('/'));
     let value = get_json(&options.client, &url)?;
     value
         .get("crate")
-        .and_then(|value| {
-            value
-                .get("newest_version")
-                .or_else(|| value.get("max_version"))
-        })
+        .and_then(|value| value.get("newest_version").or_else(|| value.get("max_version")))
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or("crates.io response has no version".into())
 }
 
 fn pypi_version(name: &str, options: &Options) -> Result<String, String> {
-    let url = format!(
-        "{}/pypi/{name}/json",
-        options.pypi_api_base.trim_end_matches('/')
-    );
+    let url = format!("{}/pypi/{name}/json", options.pypi_api_base.trim_end_matches('/'));
     let value = get_json(&options.client, &url)?;
     value
         .get("info")
@@ -300,8 +268,8 @@ fn pypi_version(name: &str, options: &Options) -> Result<String, String> {
 }
 
 fn npm_version(config: &NpmChecker, options: &Options) -> Result<String, String> {
-    let mut url = reqwest::Url::parse(options.npm_registry_base.trim_end_matches('/'))
-        .map_err(|error| error.to_string())?;
+    let mut url =
+        reqwest::Url::parse(options.npm_registry_base.trim_end_matches('/')).map_err(|error| error.to_string())?;
     url.path_segments_mut()
         .map_err(|_| "npm registry base URL cannot be a base")?
         .push(&config.name);
@@ -311,12 +279,7 @@ fn npm_version(config: &NpmChecker, options: &Options) -> Result<String, String>
         .and_then(|tags| tags.get(&config.dist_tag))
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| {
-            format!(
-                "npm package '{}' has no dist-tag '{}'",
-                config.name, config.dist_tag
-            )
-        })
+        .ok_or_else(|| format!("npm package '{}' has no dist-tag '{}'", config.name, config.dist_tag))
 }
 
 fn default_dist_tag() -> String {
@@ -456,10 +419,7 @@ mod tests {
             git(Some(&work), &["commit", "-m", "first"]);
             let first = git(Some(&work), &["rev-parse", "HEAD"]);
             git(Some(&work), &["branch", "-M", "main"]);
-            git(
-                Some(&work),
-                &["remote", "add", "origin", path.to_str().unwrap()],
-            );
+            git(Some(&work), &["remote", "add", "origin", path.to_str().unwrap()]);
             git(Some(&work), &["push", "origin", "main"]);
             git(
                 None,
@@ -484,11 +444,7 @@ mod tests {
             git(Some(&work), &["push", "origin", "main"]);
             git(Some(&work), &["push", "origin", "--tags"]);
             git(Some(&work), &["push", "origin", "HEAD:refs/custom/nightly"]);
-            Self {
-                path,
-                first,
-                second,
-            }
+            Self { path, first, second }
         }
 
         fn url(&self) -> String {
@@ -692,19 +648,12 @@ mod tests {
     fn http_get_retries_transient_statuses() {
         let fixture = HttpFixture::new(vec![
             response("503 Service Unavailable", &[], "busy"),
-            response(
-                "200 OK",
-                &[("Content-Type", "application/json")],
-                "{\"ok\":true}",
-            ),
+            response("200 OK", &[("Content-Type", "application/json")], "{\"ok\":true}"),
         ]);
         let client = reqwest::blocking::Client::builder().build().unwrap();
         let value = super::get_json(&client, &fixture.base).unwrap();
         assert_eq!(value["ok"], true);
-        assert_eq!(
-            fixture.requests.load(std::sync::atomic::Ordering::SeqCst),
-            2
-        );
+        assert_eq!(fixture.requests.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -728,11 +677,7 @@ mod tests {
     fn http_get_honors_retry_after_seconds() {
         let fixture = HttpFixture::new(vec![
             response("429 Too Many Requests", &[("Retry-After", "1")], "busy"),
-            response(
-                "200 OK",
-                &[("Content-Type", "application/json")],
-                "{\"ok\":true}",
-            ),
+            response("200 OK", &[("Content-Type", "application/json")], "{\"ok\":true}"),
         ]);
         let client = reqwest::blocking::Client::builder().build().unwrap();
         let started = std::time::Instant::now();
@@ -744,19 +689,12 @@ mod tests {
     fn http_get_does_not_retry_permanent_or_parse_errors() {
         for response in [
             response("404 Not Found", &[], "missing"),
-            response(
-                "200 OK",
-                &[("Content-Type", "application/json")],
-                "not-json",
-            ),
+            response("200 OK", &[("Content-Type", "application/json")], "not-json"),
         ] {
             let fixture = HttpFixture::new(vec![response]);
             let client = reqwest::blocking::Client::builder().build().unwrap();
             assert!(super::get_json(&client, &fixture.base).is_err());
-            assert_eq!(
-                fixture.requests.load(std::sync::atomic::Ordering::SeqCst),
-                1
-            );
+            assert_eq!(fixture.requests.load(std::sync::atomic::Ordering::SeqCst), 1);
         }
     }
 
@@ -780,10 +718,7 @@ mod tests {
         );
         let client = reqwest::blocking::Client::builder().build().unwrap();
         assert!(super::get_json(&client, &fixture.base).is_err());
-        assert_eq!(
-            fixture.requests.load(std::sync::atomic::Ordering::SeqCst),
-            4
-        );
+        assert_eq!(fixture.requests.load(std::sync::atomic::Ordering::SeqCst), 4);
     }
 
     #[test]
@@ -829,13 +764,8 @@ mod tests {
 
     #[test]
     fn command_checker_requires_exactly_one_nonempty_line() {
-        assert_eq!(
-            super::command_version("printf '  v1.2.3  \\n'").unwrap(),
-            "v1.2.3"
-        );
-        assert!(super::command_version("printf ''")
-            .unwrap_err()
-            .contains("empty"));
+        assert_eq!(super::command_version("printf '  v1.2.3  \\n'").unwrap(), "v1.2.3");
+        assert!(super::command_version("printf ''").unwrap_err().contains("empty"));
         assert!(super::command_version("printf 'v1\\nv2\\n'")
             .unwrap_err()
             .contains("exactly one"));

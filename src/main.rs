@@ -56,10 +56,7 @@ fn run_update(config: &Path, pins_path: &Path, selection: &Selection) -> ExitCod
     let result = update(config, pins_path, selection, &progress);
     progress.finish();
     match result {
-        Ok(UpdateResult {
-            processed,
-            failures,
-        }) => {
+        Ok(UpdateResult { processed, failures }) => {
             let failed = failures.len();
             if failed > 0 {
                 eprintln!("nix-pins: update completed with failures:");
@@ -122,10 +119,7 @@ fn update(
         pins.pins.retain(|name, _| checks.contains_key(name));
         pins.failures.retain(|name, _| checks.contains_key(name));
     }
-    let selected: BTreeMap<_, _> = checks
-        .into_iter()
-        .filter(|(name, _)| selection.matches(name))
-        .collect();
+    let selected: BTreeMap<_, _> = checks.into_iter().filter(|(name, _)| selection.matches(name)).collect();
     let processed = selected.len();
     let mut versions = BTreeMap::new();
     let mut failures = BTreeMap::new();
@@ -160,9 +154,7 @@ fn update(
                     })
                     .collect();
                 let mut sources = BTreeMap::new();
-                for (name, result) in
-                    run_sources(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), progress)
-                {
+                for (name, result) in run_sources(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), progress) {
                     match result {
                         Ok(source) => {
                             sources.insert(name, source);
@@ -186,8 +178,8 @@ fn update(
                         .collect();
                     match probe::probe_drvs(&config, &successful_versions, &source_hashes) {
                         Ok(mut derived_probes) => {
-                            let recalculations = source_recalculations
-                                + count_derived_recalculations(&pins, &derived_probes);
+                            let recalculations =
+                                source_recalculations + count_derived_recalculations(&pins, &derived_probes);
                             eprintln!("{recalculations} hashes need recalculation");
                             let tasks = sources
                                 .into_iter()
@@ -197,9 +189,7 @@ fn update(
                                     source,
                                 })
                                 .collect();
-                            for (name, result) in
-                                run_derived(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), progress)
-                            {
+                            for (name, result) in run_derived(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), progress) {
                                 match result {
                                     Ok(pin) => {
                                         pins.pins.insert(name, pin);
@@ -224,10 +214,7 @@ fn update(
     let save_result = transaction.save().map_err(|e| e.to_string());
     writing.task_finished(&target);
     writing.finish();
-    save_result.map(|()| UpdateResult {
-        processed,
-        failures,
-    })
+    save_result.map(|()| UpdateResult { processed, failures })
 }
 
 fn run_sources(
@@ -252,18 +239,12 @@ fn run_sources(
 }
 
 fn source_needs_recalculation(task: &SourceTask) -> bool {
-    task.probe.as_ref().is_some_and(|probe| {
-        task.previous
-            .as_ref()
-            .and_then(|pin| pin.fingerprints.get("hash"))
-            != Some(&probe.src)
-    })
+    task.probe
+        .as_ref()
+        .is_some_and(|probe| task.previous.as_ref().and_then(|pin| pin.fingerprints.get("hash")) != Some(&probe.src))
 }
 
-fn resolve_source(
-    task: SourceTask,
-    reporter: &progress::StageReporter,
-) -> Result<SourceResult, String> {
+fn resolve_source(task: SourceTask, reporter: &progress::StageReporter) -> Result<SourceResult, String> {
     let probe = task
         .probe
         .ok_or_else(|| format!("Probe did not return {}", task.name))?;
@@ -319,10 +300,7 @@ fn derived_needs_recalculation(task: &DerivedTask) -> bool {
     })
 }
 
-fn resolve_derived(
-    task: DerivedTask,
-    reporter: &progress::StageReporter,
-) -> Result<pins::Pin, String> {
+fn resolve_derived(task: DerivedTask, reporter: &progress::StageReporter) -> Result<pins::Pin, String> {
     let probe = task
         .probe
         .ok_or_else(|| format!("Probe did not return {}", task.name))?;
@@ -365,12 +343,7 @@ fn run_checkers(
     })
 }
 
-fn parallel_map<K, T, R, I, F>(
-    tasks: I,
-    jobs: usize,
-    reporter: progress::StageReporter,
-    function: F,
-) -> BTreeMap<K, R>
+fn parallel_map<K, T, R, I, F>(tasks: I, jobs: usize, reporter: progress::StageReporter, function: F) -> BTreeMap<K, R>
 where
     K: AsRef<str> + Ord + Send + 'static,
     T: Send + 'static,
@@ -411,10 +384,7 @@ where
     results
 }
 
-fn count_source_recalculations(
-    pins: &pins::PinsFile,
-    probe_results: &BTreeMap<String, probe::ProbeResult>,
-) -> usize {
+fn count_source_recalculations(pins: &pins::PinsFile, probe_results: &BTreeMap<String, probe::ProbeResult>) -> usize {
     probe_results
         .iter()
         .map(|(name, probe)| {
@@ -424,10 +394,7 @@ fn count_source_recalculations(
         .sum()
 }
 
-fn count_derived_recalculations(
-    pins: &pins::PinsFile,
-    probe_results: &BTreeMap<String, probe::ProbeResult>,
-) -> usize {
+fn count_derived_recalculations(pins: &pins::PinsFile, probe_results: &BTreeMap<String, probe::ProbeResult>) -> usize {
     probe_results
         .iter()
         .map(|(name, probe)| {
@@ -435,9 +402,7 @@ fn count_derived_recalculations(
             probe
                 .derived
                 .iter()
-                .filter(|(key, fingerprint)| {
-                    previous.and_then(|pin| pin.fingerprints.get(*key)) != Some(*fingerprint)
-                })
+                .filter(|(key, fingerprint)| previous.and_then(|pin| pin.fingerprints.get(*key)) != Some(*fingerprint))
                 .count()
         })
         .sum()

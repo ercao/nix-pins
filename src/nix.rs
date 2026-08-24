@@ -20,9 +20,7 @@ pub fn eval_json(expr: &str) -> Result<serde_json::Value, Error> {
         .output()
         .map_err(|e| Error::Nix(e.to_string()))?;
     if !out.status.success() {
-        return Err(Error::Nix(
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        ));
+        return Err(Error::Nix(String::from_utf8_lossy(&out.stderr).into_owned()));
     }
     serde_json::from_slice(&out.stdout).map_err(|e| Error::Nix(e.to_string()))
 }
