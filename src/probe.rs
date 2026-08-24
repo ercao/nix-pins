@@ -58,7 +58,7 @@ pub fn probe_drvs(
              all = import {evaluator} {{ inherit pkgs pins; config = {config}; fake = \"{FAKE}\"; }}; \
              cfg = builtins.listToAttrs (map (name: {{ inherit name; value = all.${{name}}; }}) (builtins.attrNames pins)); \
          in builtins.mapAttrs (n: p: \
-             {{ src = p.src.drvPath; inherit (p) fetcher derived; }}) cfg"
+            {{ src = p.fetchSrc.drvPath; inherit (p) fetcher derived; }}) cfg"
     );
     let value = nix::eval_json(&expr)?;
     serde_json::from_value(value).map_err(|error| nix::Error::Nix(error.to_string()))
@@ -113,6 +113,7 @@ mod tests {
   pkgs = {{
     lib.fakeHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     fetchFromGitHub = args: args // {{ drvPath = "/nix/store/demo-source.drv"; }};
+    applyPatches = args: args // {{ drvPath = "/nix/store/demo-patched.drv"; }};
     buildGoModule = args: args // {{ goModules.drvPath = "/nix/store/demo-go-modules.drv"; }};
   }};
   cfg = import {evaluator} {{
@@ -120,10 +121,14 @@ mod tests {
     config = {config};
     pins.demo = {{ version = "v1.2.3"; }};
   }};
-in {{
-  inherit (cfg.demo) check fetcher derived;
-  src = cfg.demo.src.drvPath;
-  package = cfg.demo.packages.default.pname;
+  in {{
+    inherit (cfg.demo) check fetcher derived;
+    fetchSrc = cfg.demo.fetchSrc.drvPath;
+    src = cfg.demo.src.drvPath;
+    patches = cfg.demo.src.patches;
+    postPatch = cfg.demo.src.postPatch;
+    packageSrc = cfg.demo.packages.default.src.drvPath;
+    package = cfg.demo.packages.default.pname;
   root = cfg.demo.packages.default.modRoot;
   ldflags = cfg.demo.packages.default.ldflags;
 }}"#
@@ -136,7 +141,11 @@ in {{
             result["fetcher"],
             serde_json::json!({"github": {"owner": "acme", "repo": "demo", "rev": "v1.2.3"}})
         );
-        assert_eq!(result["src"], "/nix/store/demo-source.drv");
+        assert_eq!(result["fetchSrc"], "/nix/store/demo-source.drv");
+        assert_eq!(result["src"], "/nix/store/demo-patched.drv");
+        assert_eq!(result["patches"], serde_json::json!(["demo.patch"]));
+        assert_eq!(result["postPatch"], "echo patched");
+        assert_eq!(result["packageSrc"], "/nix/store/demo-patched.drv");
         assert_eq!(
             result["derived"],
             serde_json::json!({"vendorHash": "/nix/store/demo-go-modules.drv"})
@@ -247,14 +256,18 @@ in {{
     config = {config};
     pinsFile = {pins_file};
   }};
-in {{
-  managerServer = result.cpa-manager-plus.manager-server.drvPath;
+  in {{
+    src = result.cpa-manager-plus.src.drvPath;
+    managerServer = result.cpa-manager-plus.manager-server.drvPath;
   web = result.cpa-manager-plus.web.drvPath;
+  hasNpmDeps = result.cpa-manager-plus ? npmDeps;
+  hasGoModules = result.cpa-manager-plus ? goModules;
 }}"#
         );
 
         let result = nix::eval_json(&expr).unwrap();
 
+        assert!(result["src"].as_str().unwrap().starts_with("/nix/store/"));
         assert!(result["managerServer"]
             .as_str()
             .unwrap()
@@ -263,6 +276,8 @@ in {{
             .as_str()
             .unwrap()
             .contains("cpa-manager-plus-web-v1.12.1"));
+        assert_eq!(result["hasNpmDeps"], true);
+        assert_eq!(result["hasGoModules"], true);
     }
 
     #[test]
@@ -292,6 +307,14 @@ in {{
             (
                 "cfg.non-string-url.src.drvPath",
                 ["pin 'non-string-url'", "map Version to a string"],
+            ),
+            (
+                "cfg.invalid-github-target.check",
+                ["pin 'invalid-github-target'", "'owner/repo' string"],
+            ),
+            (
+                "cfg.conflicting-target.check",
+                ["pin 'conflicting-target'", "fields 'target' and 'url'"],
             ),
         ];
 
@@ -516,17 +539,18 @@ in {{
   pkgs = {{
     lib.fakeHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     fetchFromGitHub = args: args // {{ drvPath = "/nix/store/demo-source.drv"; }};
+    applyPatches = args: args // {{ drvPath = "/nix/store/demo-patched.drv"; }};
   }};
   config = builtins.toFile "pins-config.nix" ''
     {{ pin }}: {{
       demo = pin.mk {{
-        checker = pin.checker.github {{ owner = "versions"; repo = "demo"; }};
-        fetcher = pin.fetcher.github {{
-          owner = "sources";
-          repo = "demo";
-          rev = version: "refs/tags/''${{version}}";
-          fetcherArgs.fetchSubmodules = true;
-        }};
+        checker = pin.checker.github {{ target = "versions/demo"; }};
+      fetcher = pin.fetcher.github {{
+        target = "sources/demo";
+        rev = version: "refs/tags/''${{version}}";
+        fetcherArgs.fetchSubmodules = true;
+      }};
+      postPatch = "echo patched";
       }};
     }}
   '';
@@ -557,6 +581,6 @@ in {{
                 }
             })
         );
-        assert_eq!(result["drvPath"], "/nix/store/demo-source.drv");
+        assert_eq!(result["drvPath"], "/nix/store/demo-patched.drv");
     }
 }

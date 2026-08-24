@@ -12,6 +12,8 @@
     then builtins.getAttr field attrs
     else throw "nix-pins: pin '${pinName}' ${context} is missing field '${field}'";
 
+  targets = import ./targets.nix {inherit required;};
+
   validateFields = pinName: context: allowed: attrs: let
     unknown = builtins.filter (name: !(builtins.elem name allowed)) (builtins.attrNames attrs);
   in
@@ -64,14 +66,14 @@
     in {cmd = required pinName "cmd Checker" "command" args;}
     else if kind == "github"
     then let
-      args = validateFields pinName "GitHub Checker" ["owner" "repo"] rawArgs;
-      owner = required pinName "GitHub Checker" "owner" args;
-      repo = required pinName "GitHub Checker" "repo" args;
+      args = validateFields pinName "GitHub Checker" ["target" "owner" "repo"] rawArgs;
+      target = targets.github pinName "GitHub Checker" args;
+      inherit (target) owner repo;
     in {github = "${owner}/${repo}";}
     else if kind == "git"
     then let
-      args = validateFields pinName "git Checker" ["url" "mode" "branch" "ref" "include" "exclude" "sort"] rawArgs;
-      url = required pinName "git Checker" "url" args;
+      args = validateFields pinName "git Checker" ["target" "url" "mode" "branch" "ref" "include" "exclude" "sort"] rawArgs;
+      url = targets.field pinName "git Checker" "url" args;
       mode = args.mode or "tag";
       branch = args.branch or null;
       ref = args.ref or null;
@@ -91,27 +93,27 @@
       else {git = value;}
     else if kind == "crate"
     then let
-      args = validateFields pinName "crate Checker" ["name"] rawArgs;
-    in {crate = required pinName "crate Checker" "name" args;}
+      args = validateFields pinName "crate Checker" ["target" "name"] rawArgs;
+    in {crate = targets.field pinName "crate Checker" "name" args;}
     else if kind == "pypi"
     then let
-      args = validateFields pinName "PyPI Checker" ["name"] rawArgs;
-    in {pypi = required pinName "PyPI Checker" "name" args;}
+      args = validateFields pinName "PyPI Checker" ["target" "name"] rawArgs;
+    in {pypi = targets.field pinName "PyPI Checker" "name" args;}
     else if kind == "npm"
     then let
-      args = validateFields pinName "npm Checker" ["name" "distTag"] rawArgs;
+      args = validateFields pinName "npm Checker" ["target" "name" "distTag"] rawArgs;
     in {
       npm = {
-        name = required pinName "npm Checker" "name" args;
+        name = targets.field pinName "npm Checker" "name" args;
         distTag = args.distTag or "latest";
       };
     }
     else if kind == "url"
     then let
-      args = validateFields pinName "URL Checker" ["url" "regex"] rawArgs;
+      args = validateFields pinName "URL Checker" ["target" "url" "regex"] rawArgs;
     in {
       url = {
-        url = required pinName "URL Checker" "url" args;
+        url = targets.field pinName "URL Checker" "url" args;
         regex = required pinName "URL Checker" "regex" args;
       };
     }
@@ -132,30 +134,35 @@
     inherit (builders) goModule npmPackage;
   };
 
-  declarations = import config {inherit pin;};
+  configFunction = import config;
+  configArguments = {
+    inherit pin pkgs;
+    lib = pkgs.lib;
+  };
+  declarations = configFunction (builtins.intersectAttrs (builtins.functionArgs configFunction) configArguments);
 
   normalizePin = pinName: declaration:
     if declaration._type or null == "pin"
     then let
-      args = validateFields pinName "pin.mk" ["checker" "fetcher" "packages"] declaration.args;
+      args = validateFields pinName "pin.mk" ["checker" "fetcher" "patches" "postPatch" "packages"] declaration.args;
     in {
       checker = required pinName "pin.mk" "checker" args;
       fetcher = required pinName "pin.mk" "fetcher" args;
+      patches = args.patches or [];
+      postPatch = args.postPatch or "";
       packages = args.packages or {};
     }
     else if declaration._type or null == "github"
     then let
-      args = validateFields pinName "pin.github" ["owner" "repo" "rev" "fetcherArgs" "packages"] declaration.args;
-      checkerArgs =
-        builtins.intersectAttrs {
-          owner = null;
-          repo = null;
-        }
-        args;
-      fetcherArgs = builtins.removeAttrs args ["packages"];
+      args = validateFields pinName "pin.github" ["target" "owner" "repo" "rev" "fetcherArgs" "patches" "postPatch" "packages"] declaration.args;
+      target = targets.github pinName "pin.github" args;
+      checkerArgs = target;
+      fetcherArgs = builtins.removeAttrs args ["target" "owner" "repo" "patches" "postPatch" "packages"] // target;
     in {
       checker = checker.github checkerArgs;
       fetcher = fetchers.constructors.github fetcherArgs;
+      patches = args.patches or [];
+      postPatch = args.postPatch or "";
       packages = args.packages or {};
     }
     else throw "nix-pins: pin '${pinName}' uses unsupported fetcher '${declaration._type or "unknown"}'";
@@ -166,7 +173,16 @@
     validationFetcher = (fetchers.evaluate pinName {version = "nix-pins-validation";} normalized.fetcher).fetcher;
     valid = builtins.deepSeq normalized.packages (builtins.deepSeq validationFetcher true);
     locked = pins.${pinName} or {};
-    source = fetchers.evaluate pinName locked normalized.fetcher;
+    fetched = fetchers.evaluate pinName locked normalized.fetcher;
+    src =
+      if normalized.patches == [] && normalized.postPatch == ""
+      then fetched.src
+      else
+        pkgs.applyPatches {
+          name = "${pinName}-patched";
+          src = fetched.src;
+          inherit (normalized) patches postPatch;
+        };
     packageNames = builtins.attrNames normalized.packages;
     baseHashName = packageName:
       builders.hashName pinName packageName normalized.packages.${packageName};
@@ -179,17 +195,19 @@
       else "${packageName}.${base}";
     packages =
       builtins.mapAttrs
-      (packageName: builders.evaluate pinName packageName (hashName packageName) locked source.src)
+        (packageName: builders.evaluate pinName packageName (hashName packageName) locked src)
       normalized.packages;
     derived =
       builtins.foldl'
       (result: packageName:
-        result // builders.derived pinName packageName (hashName packageName) packages.${packageName})
+        result // builders.derived pinName packageName (hashName packageName) normalized.packages.${packageName} packages.${packageName})
       {}
       packageNames;
   in {
     check = assert valid; check;
-    inherit (source) fetcher src;
+    inherit (fetched) fetcher;
+    fetchSrc = fetched.src;
+    inherit src;
     inherit derived packages;
   };
 in

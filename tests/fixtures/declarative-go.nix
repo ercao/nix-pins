@@ -1,12 +1,16 @@
-{ pin }:
 {
+  pin,
+  pkgs,
+  lib,
+}:
+assert lib.fakeHash == pkgs.lib.fakeHash; {
   demo = pin.github {
-    owner = "acme";
-    repo = "demo";
+    target = "acme/demo";
+    patches = ["demo.patch"];
+    postPatch = "echo patched";
     packages.default = pin.goModule {
-      pname = "demo";
       root = "cmd/demo";
-      ldflags = [ "-s" ];
+      ldflags = ["-s"];
     };
   };
 }

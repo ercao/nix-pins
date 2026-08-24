@@ -13,8 +13,7 @@
   };
 
   unsupported-builder = pin.github {
-    owner = "acme";
-    repo = "demo";
+    target = "acme/demo";
     packages.default = {
       _type = "rustPackage";
       args.root = ".";
@@ -24,14 +23,25 @@
   reserved-fetcher-arg = pin.mk {
     checker = pin.checker.cmd "printf v1";
     fetcher = pin.fetcher.github {
-      owner = "acme";
-      repo = "demo";
+      target = "acme/demo";
       fetcherArgs.owner = "override";
     };
   };
 
   non-string-url = pin.mk {
     checker = pin.checker.cmd "printf v1";
-    fetcher = pin.fetcher.url {url = version: {inherit version;};};
+    fetcher = pin.fetcher.url {target = version: {inherit version;};};
+  };
+
+  invalid-github-target = pin.github {
+    target = "acme/demo/extra";
+  };
+
+  conflicting-target = pin.mk {
+    checker = pin.checker.cmd "printf v1";
+    fetcher = pin.fetcher.git {
+      target = "https://example.com/demo.git";
+      url = "https://example.com/legacy.git";
+    };
   };
 }

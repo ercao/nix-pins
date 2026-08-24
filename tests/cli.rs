@@ -71,7 +71,7 @@ case "$1" in
       *p.check*)
         printf '%s\n' '{"demo":{"cmd":"printf v1.2.3"}}'
         ;;
-      *p.src.drvPath*)
+      *p.fetchSrc.drvPath*)
         printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"github":{"owner":"acme","repo":"demo","rev":"v1.2.3"}},"derived":{}}}'
         ;;
       *)
@@ -123,7 +123,7 @@ fn orthogonal_public_dsl_updates_the_pins_file() {
   demo = pin.mk {
     checker = pin.checker.cmd "printf v1.2.3";
     fetcher = pin.fetcher.url {
-      url = version: "https://example.com/demo-${version}.tar.gz";
+      target = version: "https://example.com/demo-${version}.tar.gz";
     };
   };
 }
@@ -215,7 +215,7 @@ case "$1" in
       *p.check*)
         printf '%s\n' '{"bad":{"cmd":"printf checker-failed >&2; exit 1"},"good":{"cmd":"printf v2"}}'
         ;;
-      *p.src.drvPath*)
+      *p.fetchSrc.drvPath*)
         printf '%s\n' '{"good":{"src":"/nix/store/new-good.drv","fetcher":{"url":{"url":"https://new.invalid/good"}},"derived":{}}}'
         ;;
     esac
@@ -261,7 +261,7 @@ case "$1" in
       *p.check*)
         printf '%s\n' '{"demo":{"cmd":"printf v1"}}'
         ;;
-      *p.src.drvPath*)
+      *p.fetchSrc.drvPath*)
         printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"url":{"url":"https://example.invalid/demo"}},"derived":{}}}'
         ;;
     esac
@@ -368,7 +368,7 @@ case "$1" in
       *p.check*)
         printf '%s\n' '{"demo":{"cmd":"printf v1"}}'
         ;;
-      *p.src.drvPath*)
+      *p.fetchSrc.drvPath*)
         printf '%s\n' '{"demo":{"src":"/nix/store/unchanged-source.drv","fetcher":{"url":{"url":"https://example.invalid/demo"}},"derived":{}}}'
         ;;
     esac
@@ -407,7 +407,7 @@ case "$1" in
       *p.check*)
         printf '%s\n' '{"demo":{"cmd":"printf v1"}}'
         ;;
-      *p.src.drvPath*)
+      *p.fetchSrc.drvPath*)
         case "$*" in
           *sha256-source*)
             printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"github":{"owner":"acme","repo":"demo","rev":"v1"}},"derived":{"vendorHash":"/nix/store/demo-go-modules.drv","npmDepsHash":"/nix/store/demo-npm-deps.drv"}}}'
@@ -461,7 +461,7 @@ case "$1" in
   eval)
     case "$*" in
       *p.check*) printf '%s\n' '{"demo":{"cmd":"printf v1"}}' ;;
-      *p.src.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"github":{"owner":"acme","repo":"demo","rev":"v1"}},"derived":{"vendorHash":"/nix/store/demo-go-modules.drv","npmDepsHash":"/nix/store/demo-npm-deps.drv"}}}' ;;
+      *p.fetchSrc.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"github":{"owner":"acme","repo":"demo","rev":"v1"}},"derived":{"vendorHash":"/nix/store/demo-go-modules.drv","npmDepsHash":"/nix/store/demo-npm-deps.drv"}}}' ;;
     esac
     ;;
   build)
@@ -507,7 +507,7 @@ case "$1" in
   eval)
     case "$*" in
       *p.check*) printf '%s\n' '{"demo":{"cmd":"printf v1"}}' ;;
-      *p.src.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"url":{"url":"https://example.invalid/demo"}},"derived":{"npmDepsHash":"/nix/store/demo-npm-deps.drv"}}}' ;;
+      *p.fetchSrc.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"url":{"url":"https://example.invalid/demo"}},"derived":{"npmDepsHash":"/nix/store/demo-npm-deps.drv"}}}' ;;
     esac
     ;;
   build)
@@ -598,7 +598,7 @@ case "$1" in
   eval)
     case "$*" in
       *p.check*) printf '%s\n' '{"demo":{"github":"acme/demo"}}' ;;
-      *p.src.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"github":{"owner":"acme","repo":"demo","rev":"v9"}},"derived":{}}}' ;;
+      *p.fetchSrc.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo-source.drv","fetcher":{"github":{"owner":"acme","repo":"demo","rev":"v9"}},"derived":{}}}' ;;
     esac
     ;;
   build)
@@ -678,7 +678,7 @@ case "$1" in
   eval)
     case "$*" in
       *p.check*) printf '%s\n' '{{"crate":{{"crate":"demo-crate"}},"git":{{"git":"https://example.invalid/repo.git"}},"pypi":{{"pypi":"demo-package"}},"url":{{"url":{{"url":"{base}/versions","regex":"version=([0-9.]+)"}}}}}}' ;;
-      *p.src.drvPath*) printf '%s\n' '{{"crate":{{"src":"/nix/store/crate.drv","fetcher":{{"url":{{"url":"https://example.invalid/crate"}}}},"derived":{{}}}},"git":{{"src":"/nix/store/git.drv","fetcher":{{"git":{{"url":"https://example.invalid/repo.git","rev":"v1.10.0"}}}},"derived":{{}}}},"pypi":{{"src":"/nix/store/pypi.drv","fetcher":{{"url":{{"url":"https://example.invalid/pypi"}}}},"derived":{{}}}},"url":{{"src":"/nix/store/url.drv","fetcher":{{"url":{{"url":"https://example.invalid/url"}}}},"derived":{{}}}}}}' ;;
+      *p.fetchSrc.drvPath*) printf '%s\n' '{{"crate":{{"src":"/nix/store/crate.drv","fetcher":{{"url":{{"url":"https://example.invalid/crate"}}}},"derived":{{}}}},"git":{{"src":"/nix/store/git.drv","fetcher":{{"git":{{"url":"https://example.invalid/repo.git","rev":"v1.10.0"}}}},"derived":{{}}}},"pypi":{{"src":"/nix/store/pypi.drv","fetcher":{{"url":{{"url":"https://example.invalid/pypi"}}}},"derived":{{}}}},"url":{{"src":"/nix/store/url.drv","fetcher":{{"url":{{"url":"https://example.invalid/url"}}}},"derived":{{}}}}}}' ;;
     esac
     ;;
   build)
@@ -814,7 +814,7 @@ case "$1" in
   eval)
     case "$*" in
       *p.check*) printf '%s\n' '{"a":{"cmd":"sleep 0.6; printf v1"},"b":{"cmd":"sleep 0.6; printf v1"},"c":{"cmd":"sleep 0.6; printf v1"},"d":{"cmd":"sleep 0.6; printf v1"}}' ;;
-      *p.src.drvPath*) printf '%s\n' '{"a":{"src":"/nix/store/a.drv","fetcher":{"url":{"url":"https://example.invalid/a"}},"derived":{}},"b":{"src":"/nix/store/b.drv","fetcher":{"url":{"url":"https://example.invalid/b"}},"derived":{}},"c":{"src":"/nix/store/c.drv","fetcher":{"url":{"url":"https://example.invalid/c"}},"derived":{}},"d":{"src":"/nix/store/d.drv","fetcher":{"url":{"url":"https://example.invalid/d"}},"derived":{}}}' ;;
+      *p.fetchSrc.drvPath*) printf '%s\n' '{"a":{"src":"/nix/store/a.drv","fetcher":{"url":{"url":"https://example.invalid/a"}},"derived":{}},"b":{"src":"/nix/store/b.drv","fetcher":{"url":{"url":"https://example.invalid/b"}},"derived":{}},"c":{"src":"/nix/store/c.drv","fetcher":{"url":{"url":"https://example.invalid/c"}},"derived":{}},"d":{"src":"/nix/store/d.drv","fetcher":{"url":{"url":"https://example.invalid/d"}},"derived":{}}}' ;;
     esac
     ;;
   build)
@@ -851,7 +851,7 @@ case "$1" in
   eval)
     case "$*" in
       *p.check*) printf '%s\n' '{"a":{"cmd":"printf v1"},"b":{"cmd":"printf v1"}}' ;;
-      *p.src.drvPath*) printf '%s\n' '{"a":{"src":"/nix/store/a.drv","fetcher":{"url":{"url":"https://example.invalid/a"}},"derived":{}},"b":{"src":"/nix/store/b.drv","fetcher":{"url":{"url":"https://example.invalid/b"}},"derived":{}}}' ;;
+      *p.fetchSrc.drvPath*) printf '%s\n' '{"a":{"src":"/nix/store/a.drv","fetcher":{"url":{"url":"https://example.invalid/a"}},"derived":{}},"b":{"src":"/nix/store/b.drv","fetcher":{"url":{"url":"https://example.invalid/b"}},"derived":{}}}' ;;
     esac
     ;;
   build)
@@ -894,7 +894,7 @@ case "$1" in
   eval)
     case "$*" in
       *p.check*) printf '%s\n' '{"alpha":{"cmd":"printf v1"},"beta":{"cmd":"printf v1"}}' ;;
-      *p.src.drvPath*) printf '%s\n' '{"alpha":{"src":"/nix/store/alpha.drv","fetcher":{"url":{"url":"https://example.invalid/alpha"}},"derived":{}}}' ;;
+      *p.fetchSrc.drvPath*) printf '%s\n' '{"alpha":{"src":"/nix/store/alpha.drv","fetcher":{"url":{"url":"https://example.invalid/alpha"}},"derived":{}}}' ;;
     esac
     ;;
   build)
@@ -1028,7 +1028,7 @@ case "$1" in
   eval)
     case "$*" in
       *p.check*) printf '%s\n' '{"alpha":{"cmd":"printf v2"},"beta":{"cmd":"printf v2"}}' ;;
-      *p.src.drvPath*) printf '%s\n' '{"alpha":{"src":"/nix/store/alpha.drv","fetcher":{"url":{"url":"https://new.invalid/alpha"}},"derived":{}},"beta":{"src":"/nix/store/beta.drv","fetcher":{"url":{"url":"https://new.invalid/beta"}},"derived":{}}}' ;;
+      *p.fetchSrc.drvPath*) printf '%s\n' '{"alpha":{"src":"/nix/store/alpha.drv","fetcher":{"url":{"url":"https://new.invalid/alpha"}},"derived":{}},"beta":{"src":"/nix/store/beta.drv","fetcher":{"url":{"url":"https://new.invalid/beta"}},"derived":{}}}' ;;
     esac
     ;;
   build)
@@ -1116,7 +1116,7 @@ case "$1" in
   eval)
     case "$*" in
       *p.check*) printf '%s\n' '{"demo":{"cmd":"printf v1"}}' ;;
-      *p.src.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo.drv","fetcher":{"url":{"url":"https://example.invalid/demo"}},"derived":{}}}' ;;
+      *p.fetchSrc.drvPath*) printf '%s\n' '{"demo":{"src":"/nix/store/demo.drv","fetcher":{"url":{"url":"https://example.invalid/demo"}},"derived":{}}}' ;;
     esac
     ;;
   build)

@@ -20,7 +20,7 @@ Pins File 仍只保存已解析的版本与 Fetcher 数据，schema 不因 Check
 pin.mk {
   checker = pin.checker.cmd "...";
   fetcher = pin.fetcher.url {
-    url = version: "https://example.com/pkg-${version}.tar.gz";
+    target = version: "https://example.com/pkg-${version}.tar.gz";
   };
   packages.default = pin.goModule {};
 }
@@ -60,4 +60,6 @@ Fetcher 参数中的 Version 映射函数只在已有锁定 Version 时求值。
 
 映射函数只接收 Version 字符串。Pin 名称、上一轮锁定值或其他运行时上下文不属于调用协议；配置需要的静态信息由原生 Nix 闭包捕获。
 
-GitHub 与 git Fetcher 默认使用 `version: version` 作为 `rev` 映射，并允许显式覆盖该函数。URL Fetcher 没有可靠通用默认，必须提供 `url = version: ...`，不接受静态 URL 字符串。
+GitHub 与 git Fetcher 默认使用 `version: version` 作为 `rev` 映射，并允许显式覆盖该函数。URL Fetcher 没有可靠通用默认，必须提供 `target = version: ...`，不接受静态 URL 字符串。
+
+公开 DSL 使用 `target` 表示各构造器操作的目标：GitHub 使用 `"owner/repo"`，git 使用仓库 URL，注册表 Checker 使用包名，URL Checker 使用 URL，URL Fetcher 使用 `Version -> URL` 函数。求值层将 `target` 归一化到既有内部字段，Pins File schema 不变。旧的 `owner`/`repo`、`url` 与 `name` 字段继续兼容，但不能与 `target` 同时出现。

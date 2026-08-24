@@ -22,8 +22,9 @@ Pins File 当前直接覆盖写入；两个并发 Update 可能互相覆盖，�
 
 ```nix
 curlie = pin.github {
-  owner = "rs";
-  repo = "curlie";
+  target = "rs/curlie";
+  patches = [./curlie.patch];
+  postPatch = "echo patched";
   packages.default = pin.goModule {};
 };
 ```
@@ -34,33 +35,38 @@ curlie = pin.github {
 example = pin.mk {
   checker = pin.checker.cmd "git ls-remote ...";
   fetcher = pin.fetcher.git {
-    url = "https://example.com/repo.git";
+    target = "https://example.com/repo.git";
   };
   packages.default = pin.npmPackage {};
 };
 
 crate-example = pin.mk {
-  checker = pin.checker.crate { name = "demo"; };
+  checker = pin.checker.crate { target = "demo"; };
   fetcher = pin.fetcher.url {
-    url = version: "https://example.com/demo-${version}.tar.gz";
+    target = version: "https://example.com/demo-${version}.tar.gz";
   };
 };
 ```
 
+Builder 未显式设置 `pname` 时，`packages.default` 默认使用 Pin 名，其他具名包默认使用 `${pinName}-${packageName}`；显式 `pname` 始终优先。
+
+`pin.mk` 与 `pin.github` 的 `patches`、`postPatch` 由 `pkgs.applyPatches` 处理。对外 `src` 与全部 Builder 使用处理后的源码；源码哈希仍针对原始 Fetcher 输出计算。
+
 `pin.checker` 暴露：
 
 - `cmd "..."`
-- `github { owner; repo; }`
-- `git { url; }`
-- `crate { name; }`
-- `pypi { name; }`
-- `url { url; regex; }`
+- `github { target = "owner/repo"; }`
+- `git { target = url; }`
+- `crate { target = name; }`
+- `pypi { target = name; }`
+- `npm { target = name; distTag ? "latest"; }`
+- `url { target = url; regex; }`
 
 `pin.fetcher` 暴露：
 
-- `github { owner; repo; rev ? version: version; fetcherArgs ? {}; }`
-- `git { url; rev ? version: version; fetcherArgs ? {}; }`
-- `url { url = version: ...; fetcherArgs ? {}; }`
+- `github { target = "owner/repo"; rev ? version: version; fetcherArgs ? {}; }`
+- `git { target = url; rev ? version: version; fetcherArgs ? {}; }`
+- `url { target = version: ...; fetcherArgs ? {}; }`
 
 公共构造器使用结构化参数。现有 Rust Checker JSON 只作为 Probe 内部契约。未知字段、缺失字段、不可序列化的映射结果，以及 `fetcherArgs` 覆盖 `owner`、`repo`、`url`、`rev`、`hash` 等保留字段，均属于 Configuration Error：在任何 Checker 运行前全局失败且不写 Pins File。
 

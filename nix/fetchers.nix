@@ -7,6 +7,8 @@
     then builtins.getAttr field attrs
     else throw "nix-pins: pin '${pinName}' ${context} is missing field '${field}'";
 
+  targets = import ./targets.nix {inherit required;};
+
   validateFields = pinName: context: allowed: attrs: let
     unknown = builtins.filter (name: !(builtins.elem name allowed)) (builtins.attrNames attrs);
   in
@@ -52,9 +54,9 @@
   in
     if kind == "github"
     then let
-      args = validateFields pinName "GitHub Fetcher" ["owner" "repo" "rev" "fetcherArgs"] rawArgs;
-      owner = required pinName "GitHub Fetcher" "owner" args;
-      repo = required pinName "GitHub Fetcher" "repo" args;
+      args = validateFields pinName "GitHub Fetcher" ["target" "owner" "repo" "rev" "fetcherArgs"] rawArgs;
+      target = targets.github pinName "GitHub Fetcher" args;
+      inherit (target) owner repo;
       rev = args.rev or (version: version);
       validArgs = validateFetcherArgs pinName "GitHub Fetcher" ["owner" "repo" "rev" "hash"] args;
     in
@@ -62,8 +64,8 @@
       assert validArgs; {inherit kind args owner repo rev;}
     else if kind == "git"
     then let
-      args = validateFields pinName "git Fetcher" ["url" "rev" "fetcherArgs"] rawArgs;
-      url = required pinName "git Fetcher" "url" args;
+      args = validateFields pinName "git Fetcher" ["target" "url" "rev" "fetcherArgs"] rawArgs;
+      url = targets.field pinName "git Fetcher" "url" args;
       rev = args.rev or (version: version);
       validArgs = validateFetcherArgs pinName "git Fetcher" ["url" "rev" "hash"] args;
     in
@@ -71,8 +73,8 @@
       assert validArgs; {inherit kind args url rev;}
     else if kind == "url"
     then let
-      args = validateFields pinName "URL Fetcher" ["url" "fetcherArgs"] rawArgs;
-      url = required pinName "URL Fetcher" "url" args;
+      args = validateFields pinName "URL Fetcher" ["target" "url" "fetcherArgs"] rawArgs;
+      url = targets.field pinName "URL Fetcher" "url" args;
       validArgs = validateFetcherArgs pinName "URL Fetcher" ["url" "hash"] args;
     in
       assert builtins.isFunction url || throw "nix-pins: pin '${pinName}' URL Fetcher field 'url' must be a function";

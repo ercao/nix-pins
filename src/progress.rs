@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, IsTerminal};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 #[derive(Clone, Copy)]
 pub enum Stage {
@@ -216,7 +215,6 @@ impl Renderer {
                 spinner.set_message(name.clone());
                 let spinner = self.multi.add(spinner);
                 spinner.tick();
-                spinner.enable_steady_tick(Duration::from_millis(80));
                 self.tasks.insert(name, spinner);
             }
             Event::TaskDetail { name, detail } => {
@@ -278,11 +276,6 @@ mod tests {
         let active = term.contents();
         assert!(active.contains("Checking versions"), "{active}");
         assert!(active.contains("ripgrep"), "{active}");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        while term.contents() == active && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert_ne!(term.contents(), active);
 
         renderer.apply(Event::TaskFinished {
             name: "ripgrep".into(),
