@@ -3,7 +3,7 @@
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal};
-use std::sync::mpsc;
+use std::sync::{mpsc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -454,13 +454,14 @@ struct Renderer {
     versions: BTreeMap<String, PinVersions>,
     active: BTreeMap<String, ActivePin>,
     operation: ProgressBar,
+    frame: usize,
 }
 
 impl Renderer {
     fn new(target: ProgressDrawTarget) -> Self {
         let multi = MultiProgress::with_draw_target(target);
         let operation = ProgressBar::new_spinner();
-        operation.set_style(spinner_style());
+        operation.set_style(spinner_style().clone());
         let operation = multi.add(operation);
         operation.finish_and_clear();
         Self {
@@ -468,6 +469,7 @@ impl Renderer {
             versions: BTreeMap::new(),
             active: BTreeMap::new(),
             operation,
+            frame: 0,
         }
     }
 
@@ -666,7 +668,6 @@ impl Renderer {
                 self.operation.set_message(label);
                 self.operation.reset();
                 self.operation.tick();
-                self.operation.enable_steady_tick(Duration::from_millis(80));
             }
             Event::OperationFinished(status) => {
                 let label = self.operation.message().to_string();
@@ -695,10 +696,9 @@ impl Renderer {
             return;
         }
         let bar = ProgressBar::new_spinner();
-        bar.set_style(spinner_style());
+        bar.set_style(spinner_style().clone());
         let bar = self.multi.add(bar);
         bar.tick();
-        bar.enable_steady_tick(Duration::from_millis(80));
         self.active.insert(
             name.into(),
             ActivePin {
@@ -719,8 +719,17 @@ impl Renderer {
             current: "—".into(),
             target: "…".into(),
         });
-        pin.bar.set_message(render_active(name, &versions, pin));
+        pin.bar.set_message(render_active(name, &versions, pin, self.frame));
         pin.bar.tick();
+    }
+
+    fn tick(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        let names: Vec<_> = self.active.keys().cloned().collect();
+        for name in names {
+            self.refresh(&name);
+        }
+        self.operation.tick();
     }
 
     fn finish_pin(&mut self, name: &str, success: bool, detail: Option<String>) {
@@ -761,13 +770,16 @@ impl Renderer {
     }
 }
 
-fn spinner_style() -> ProgressStyle {
-    ProgressStyle::with_template("{spinner} {msg}")
-        .unwrap()
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ")
+fn spinner_style() -> &'static ProgressStyle {
+    static STYLE: OnceLock<ProgressStyle> = OnceLock::new();
+    STYLE.get_or_init(ProgressStyle::default_spinner)
 }
 
-fn render_active(name: &str, versions: &PinVersions, pin: &ActivePin) -> String {
+fn spinner_frame(frame: usize) -> &'static str {
+    spinner_style().get_tick_str(frame as u64)
+}
+
+fn render_active(name: &str, versions: &PinVersions, pin: &ActivePin, frame: usize) -> String {
     let folded = if pin.sources.len() == 1 {
         pin.sources.get("default")
     } else {
@@ -787,9 +799,9 @@ fn render_active(name: &str, versions: &PinVersions, pin: &ActivePin) -> String 
     );
 
     if let Some(source) = folded {
-        append_packages(&mut line, "", &source.packages);
+        append_packages(&mut line, "", &source.packages, frame);
     } else if pin.sources.is_empty() {
-        append_packages(&mut line, "", &pin.packages);
+        append_packages(&mut line, "", &pin.packages, frame);
     } else {
         let len = pin.sources.len();
         for (index, (source_name, source)) in pin.sources.iter().enumerate() {
@@ -807,28 +819,31 @@ fn render_active(name: &str, versions: &PinVersions, pin: &ActivePin) -> String 
                 .map(|detail| format!(" · {detail}"))
                 .unwrap_or_default();
             line.push_str(&format!("\n{connector} {source_name} {step}{detail}"));
-            append_packages(&mut line, child_prefix, &source.packages);
+            append_packages(&mut line, child_prefix, &source.packages, frame);
         }
     }
 
     line
 }
 
-fn append_packages(line: &mut String, prefix: &str, packages: &BTreeMap<String, PackageState>) {
+fn append_packages(line: &mut String, prefix: &str, packages: &BTreeMap<String, PackageState>, frame: usize) {
     let len = packages.len();
     for (index, (package, state)) in packages.iter().enumerate() {
         let connector = if index + 1 == len { "└─" } else { "├─" };
-        line.push_str(&format!("\n{prefix}{connector} {package} {}", package_label(state)));
+        line.push_str(&format!(
+            "\n{prefix}{connector} {package} {}",
+            package_label(state, frame)
+        ));
     }
 }
 
-fn package_label(state: &PackageState) -> String {
+fn package_label(state: &PackageState, frame: usize) -> String {
     match state {
         PackageState::Waiting => "waiting".into(),
         PackageState::Active { key, detail } => detail
             .as_ref()
-            .map(|detail| format!("⠋ Hashing {key} · {detail}"))
-            .unwrap_or_else(|| format!("⠋ Hashing {key}")),
+            .map(|detail| format!("{} Hashing {key} · {detail}", spinner_frame(frame)))
+            .unwrap_or_else(|| format!("{} Hashing {key}", spinner_frame(frame))),
         PackageState::Ready(key) => format!("✓ {key} ready"),
         PackageState::Reused(key) => format!("↺ {key} reused"),
         PackageState::Failed(key) => format!("✗ {key} failed"),
@@ -838,9 +853,15 @@ fn package_label(state: &PackageState) -> String {
 fn render(receiver: mpsc::Receiver<Event>, target: Option<ProgressDrawTarget>) {
     if let Some(target) = target {
         let mut renderer = Renderer::new(target);
-        for event in receiver {
-            if !renderer.apply(event) {
-                break;
+        loop {
+            match receiver.recv_timeout(Duration::from_millis(80)) {
+                Ok(event) => {
+                    if !renderer.apply(event) {
+                        break;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => renderer.tick(),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
     } else {
@@ -1102,7 +1123,13 @@ mod tests {
         });
         let active = term.contents();
         assert!(active.contains("├─ api ↺ vendorHash reused"), "{active}");
-        assert!(active.contains("└─ web ⠋ Hashing npmDepsHash"), "{active}");
+        assert!(active.contains("└─ web ⠁ Hashing npmDepsHash"), "{active}");
+
+        renderer.tick();
+        renderer.tick();
+        let ticked = term.contents();
+        assert!(ticked.contains("└─ web ⠉ Hashing npmDepsHash"), "{ticked}");
+
         renderer.apply(Event::PinDone {
             name: "demo".into(),
             packages: Some(2),
@@ -1156,7 +1183,7 @@ mod tests {
         assert!(active.contains("├─ archive Source Ready"), "{active}");
         assert!(active.contains("└─ repository Hashing packages"), "{active}");
         assert!(active.contains("   ├─ api ↺ vendorHash reused"), "{active}");
-        assert!(active.contains("   └─ cli ⠋ Hashing vendorHash"), "{active}");
+        assert!(active.contains("   └─ cli ⠁ Hashing vendorHash"), "{active}");
 
         renderer.apply(Event::PinFailed {
             name: "release".into(),
