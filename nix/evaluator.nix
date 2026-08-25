@@ -23,6 +23,13 @@
     then attrs
     else throw "nix-pins: pin '${pinName}' ${context} has unknown field '${builtins.head unknown}'";
 
+  convenienceArgs = context: args:
+    if builtins.isString args
+    then {target = args;}
+    else if builtins.isAttrs args
+    then args
+    else throw "nix-pins: ${context} must receive a string or attribute set";
+
   checker = {
     cmd = command: {
       _type = "cmd";
@@ -127,9 +134,13 @@
   pin = {
     inherit checker mk;
     fetcher = fetchers.constructors;
-    github = args: {
+    github = rawArgs: {
       _type = "github";
-      inherit args;
+      args = convenienceArgs "pin.github" rawArgs;
+    };
+    git = rawArgs: {
+      _type = "git";
+      args = convenienceArgs "pin.git" rawArgs;
     };
     inherit (builders) goModule npmPackage;
   };
@@ -187,6 +198,22 @@
         packages = args.packages or {};
       };
     }
+    else if declaration._type or null == "git"
+    then let
+      args = validateFields pinName "pin.git" ["target" "mode" "branch" "ref" "include" "exclude" "sort" "rev" "fetcherArgs" "patches" "postPatch" "packages"] declaration.args;
+      target = required pinName "pin.git" "target" args;
+      checkerArgs = builtins.removeAttrs args ["rev" "fetcherArgs" "patches" "postPatch" "packages"];
+      fetcherArgs = builtins.removeAttrs args ["mode" "branch" "ref" "include" "exclude" "sort" "patches" "postPatch" "packages"];
+    in
+      assert builtins.isString target || throw "nix-pins: pin '${pinName}' pin.git field 'target' must be a string"; {
+        checker = checker.git checkerArgs;
+        sources.default = {
+          fetcher = fetchers.constructors.git fetcherArgs;
+          patches = args.patches or [];
+          postPatch = args.postPatch or "";
+          packages = args.packages or {};
+        };
+      }
     else throw "nix-pins: pin '${pinName}' uses unsupported fetcher '${declaration._type or "unknown"}'";
   evaluatePin = pinName: declaration: let
     normalized = normalizePin pinName declaration;
