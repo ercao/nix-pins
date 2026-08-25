@@ -140,7 +140,14 @@ impl NixLog {
             let transfers = downloads.len();
             if downloads.iter().all(|(_, total)| total.is_some()) {
                 let total = downloads.iter().filter_map(|(_, total)| *total).sum::<u64>();
-                let percent = done.saturating_mul(100).checked_div(total).unwrap_or(0);
+                if done >= total {
+                    return Some(format!(
+                        "Downloaded {} · {transfers} {}",
+                        format_bytes(done),
+                        if transfers == 1 { "transfer" } else { "transfers" }
+                    ));
+                }
+                let percent = done.saturating_mul(100).checked_div(total).unwrap_or(0).min(100);
                 return Some(format!(
                     "Downloading {}/{} MiB ({percent}%) · {transfers} {}",
                     format_mib(done),
@@ -149,7 +156,7 @@ impl NixLog {
                 ));
             }
             return Some(format!(
-                "Downloading {} downloaded · {transfers} {}",
+                "Downloading {} · {transfers} {}",
                 format_bytes(done),
                 if transfers == 1 { "transfer" } else { "transfers" }
             ));
@@ -439,10 +446,15 @@ mod tests {
         log.push(r#"@nix {"action":"start","id":1,"type":101,"fields":["hidden"]}"#);
         log.push(r#"@nix {"action":"result","id":1,"type":105,"fields":[1048576,0,0,0]}"#);
 
-        assert_eq!(
-            log.detail().as_deref(),
-            Some("Downloading 1.0 MiB downloaded · 1 transfer")
-        );
+        assert_eq!(log.detail().as_deref(), Some("Downloading 1.0 MiB · 1 transfer"));
+    }
+
+    #[test]
+    fn internal_json_shows_completed_download_without_percentage() {
+        let mut log = NixLog::default();
+        log.push(r#"@nix {"action":"start","id":1,"type":101,"fields":["hidden"]}"#);
+        log.push(r#"@nix {"action":"result","id":1,"type":105,"fields":[1048576,1048576,0,0]}"#);
+        assert_eq!(log.detail().as_deref(), Some("Downloaded 1.0 MiB · 1 transfer"));
     }
 
     #[test]
