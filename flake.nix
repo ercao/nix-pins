@@ -21,6 +21,7 @@
         ];
         preCheck = ''
           export NIX_REMOTE="local?root=$TMPDIR/nix-store"
+          export NIX_PATH="nixpkgs=${pkgs.path}"
         '';
         checkFlags = [
           "--test-threads=1"
