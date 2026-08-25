@@ -28,8 +28,14 @@ pub fn eval_json(expr: &str) -> Result<serde_json::Value, Error> {
 #[derive(Debug)]
 enum Activity {
     Copy,
-    Download { done: u64, total: Option<u64> },
-    Build { phase: Option<(u64, String)> },
+    Download {
+        done: u64,
+        total: Option<u64>,
+    },
+    Build {
+        phase: Option<(u64, String)>,
+        download: Option<String>,
+    },
     Query,
 }
 
@@ -69,7 +75,10 @@ impl NixLog {
                 let activity = match value.get("type").and_then(serde_json::Value::as_u64) {
                     Some(100) => Activity::Copy,
                     Some(101) => Activity::Download { done: 0, total: None },
-                    Some(105) => Activity::Build { phase: None },
+                    Some(105) => Activity::Build {
+                        phase: None,
+                        download: None,
+                    },
                     Some(108) => Activity::Query,
                     Some(_) => return None,
                     None => return Some(line.into()),
@@ -92,19 +101,21 @@ impl NixLog {
                             .and_then(serde_json::Value::as_u64)
                             .filter(|value| *value > 0);
                     }
-                    (104, Some(Activity::Build { phase }), Some(fields)) => {
+                    (104, Some(Activity::Build { phase, .. }), Some(fields)) => {
                         let Some(value) = fields.first().and_then(serde_json::Value::as_str) else {
                             return Some(line.into());
                         };
                         self.phase_sequence += 1;
                         *phase = Some((self.phase_sequence, value.into()));
                     }
-                    (101, _, Some(fields)) => {
-                        return fields
-                            .first()
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_owned)
-                            .or_else(|| Some(line.into()));
+                    (101, activity, Some(fields)) => {
+                        let Some(value) = fields.first().and_then(serde_json::Value::as_str) else {
+                            return Some(line.into());
+                        };
+                        if let Some(Activity::Build { download, .. }) = activity {
+                            *download = builder_progress(value);
+                        }
+                        return Some(value.into());
                     }
                     (101 | 104 | 105, _, None) => return Some(line.into()),
                     _ => return None,
@@ -150,11 +161,17 @@ impl NixLog {
         {
             return Some("Copying Store Path".into());
         }
+        if let Some(download) = self.activities.values().find_map(|activity| match activity {
+            Activity::Build { download, .. } => download.as_ref(),
+            _ => None,
+        }) {
+            return Some(download.clone());
+        }
         if let Some((_, phase)) = self
             .activities
             .values()
             .filter_map(|activity| match activity {
-                Activity::Build { phase } => phase.as_ref(),
+                Activity::Build { phase, .. } => phase.as_ref(),
                 _ => None,
             })
             .max_by_key(|(sequence, _)| *sequence)
@@ -173,6 +190,59 @@ impl NixLog {
             .any(|activity| matches!(activity, Activity::Query))
             .then(|| "Querying Cache".into())
     }
+}
+
+fn builder_progress(line: &str) -> Option<String> {
+    curl_progress(line).or_else(|| git_progress(line))
+}
+
+fn curl_progress(line: &str) -> Option<String> {
+    let fields: Vec<_> = line.split_whitespace().collect();
+    if fields.len() < 9 {
+        return None;
+    }
+    let percent: u8 = fields[0].parse().ok()?;
+    let size = |value: &str| {
+        value.chars().any(|character| character.is_ascii_digit())
+            && value
+                .chars()
+                .all(|character| character.is_ascii_digit() || ".kMGT".contains(character))
+    };
+    if percent > 100
+        || !size(fields[1])
+        || !size(fields[3])
+        || !(fields[8..].iter().any(|value| value.contains(':')) || fields.iter().all(|value| *value == "0"))
+    {
+        return None;
+    }
+    if fields[1] == "0" {
+        Some(format!("Downloading {} downloaded", fields[3]))
+    } else {
+        Some(format!("Downloading {}/{} ({percent}%)", fields[3], fields[1]))
+    }
+}
+
+fn git_progress(line: &str) -> Option<String> {
+    if !line.contains('|') && !line.contains("Receiving objects:") && !line.contains("Downloading LFS objects:") {
+        return None;
+    }
+    let marker = line.find("% (")?;
+    let percent = line[..marker]
+        .rsplit(|character: char| !character.is_ascii_digit())
+        .next()?
+        .parse::<u8>()
+        .ok()?;
+    let counts = line[marker + 3..].split_once(')')?.0;
+    let (done, total) = counts.split_once('/')?;
+    if percent > 100
+        || done.is_empty()
+        || total.is_empty()
+        || !done.chars().all(|character| character.is_ascii_digit())
+        || !total.chars().all(|character| character.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(format!("Git {done}/{total} ({percent}%)"))
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -373,6 +443,36 @@ mod tests {
             log.detail().as_deref(),
             Some("Downloading 1.0 MiB downloaded · 1 transfer")
         );
+    }
+
+    #[test]
+    fn internal_json_reads_fetchurl_curl_progress() {
+        let mut log = NixLog::default();
+        log.push(r#"@nix {"action":"start","id":1,"type":105,"fields":["hidden.drv"]}"#);
+
+        log.push(r#"@nix {"action":"result","id":1,"type":101,"fields":[" 0 0 0 0 0 0 0 0 0"]}"#);
+        assert_eq!(log.detail().as_deref(), Some("Downloading 0 downloaded"));
+        log.push(
+            r#"@nix {"action":"result","id":1,"type":101,"fields":[" 42 10.0M 0 4.2M 0 0 1.0M 0 00:10 00:04 00:06"]}"#,
+        );
+        assert_eq!(log.detail().as_deref(), Some("Downloading 4.2M/10.0M (42%)"));
+        log.push(r#"@nix {"action":"result","id":1,"type":101,"fields":["unpacking source archive"]}"#);
+        assert_eq!(log.detail().as_deref(), Some("Building"));
+    }
+
+    #[test]
+    fn internal_json_reads_fetchgit_and_lfs_progress() {
+        let mut log = NixLog::default();
+        log.push(r#"@nix {"action":"start","id":1,"type":105,"fields":["hidden.drv"]}"#);
+
+        log.push(
+            r#"@nix {"action":"result","id":1,"type":101,"fields":["展开对象中: 42% (13/31), 4.2 MiB | 1.0 MiB/s"]}"#,
+        );
+        assert_eq!(log.detail().as_deref(), Some("Git 13/31 (42%)"));
+        log.push(
+            r#"@nix {"action":"result","id":1,"type":101,"fields":["Downloading LFS objects: 75% (3/4), 12 MB | 2 MB/s"]}"#,
+        );
+        assert_eq!(log.detail().as_deref(), Some("Git 3/4 (75%)"));
     }
 
     #[test]

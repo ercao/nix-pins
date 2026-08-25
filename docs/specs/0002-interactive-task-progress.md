@@ -25,10 +25,10 @@ labels: ready-for-agent
 13. 同一 Pin 存在多个 Nix activity 时，详情优先级固定为 Downloading、Copying Store Path、stdenv Phase、Building、Querying Cache。高优先级结束后回落到仍活跃的下一项。
 14. Derived Hash 工作保留 Package 归属。唯一名为 `default` 的 Package 内联到父级 Pin；存在多个 Package，或唯一 Package 不是 `default` 时展开 Package 子树，父级显示 Hashing Packages。
 15. Package 子树只在父级 Pin 活跃时显示。父级 Done 或 Failed 后折叠为静态 Pin 行；成功时可以显示 Package 数量。
-16. Package 树不改变并发模型。同一 Pin 内的 Derived Hash 继续顺序计算，`NIX_PINS_HASH_JOBS` 仍只控制同时处理的 Pin 数量。
+16. Package 树不改变并发模型。同一 Source 内的 Derived Hash 继续顺序计算；`NIX_PINS_DOWNLOAD_JOBS` 控制 Source Hash 并发，`NIX_PINS_HASH_JOBS` 控制 Derived Hash 并发。
 17. stderr 为 TTY 时默认启用交互式进度，不增加开关。
 18. 使用 `indicatif::MultiProgress` 渲染 TTY，依赖保持 `0.18` 系列。
-19. 保持 Checker 默认并发 8、Source/Derived Hash 默认并发 1；保留 `NIX_PINS_CHECKER_JOBS` 与 `NIX_PINS_HASH_JOBS`，不增加 CLI 并发参数。
+19. Checker 与 Source Hash 默认并发 8，Derived Hash 默认并发 1；保留 `NIX_PINS_CHECKER_JOBS`、`NIX_PINS_DOWNLOAD_JOBS` 与 `NIX_PINS_HASH_JOBS`，不增加 CLI 并发参数。
 20. spinner、树形字符、列宽和具体英文文案不属于稳定 CLI 输出契约。Pins File、退出码和最终失败摘要仍属于稳定行为。
 
 ## 既有约束
@@ -102,7 +102,7 @@ Package 树展示该 Pin 的全部 Package 状态，但同一 Pin 内仍只有�
 
 详情选择顺序：
 
-1. Downloading：聚合全部活跃 file-transfer。
+1. Downloading：聚合全部活跃 file-transfer，或解析 fetchurl 的 curl 字节进度及 fetchgit/Git LFS 的对象进度。
 2. Copying Store Path：存在活跃 copy-path 或 substitute 复制。
 3. stdenv Phase：显示最近仍适用的 `resSetPhase`，如 `buildPhase`。
 4. Building：存在活跃 build activity，但没有更高优先级详情。

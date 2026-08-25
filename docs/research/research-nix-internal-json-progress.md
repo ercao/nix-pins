@@ -50,7 +50,7 @@ phase 不是所有 derivation 都保证产生。UI 可以优先显示最近一�
 
 ## 可操作结论
 
-1. 对当前“一项 Source 对应一个 `nix build` 子进程”的模型，`internal-json` 足以按 Source 分组展示：当前版本、目标版本由 nix-pins 自己提供，当前 step 和字节进度由该子进程的 stderr activity 流提供。
+1. 对当前“一项 Source 对应一个 `nix build` 子进程”的模型，`internal-json` 足以按 Source 分组展示：当前版本、目标版本由 nix-pins 自己提供。Nix 自身下载使用 file-transfer activity；nixpkgs fetchurl 的 curl 与 fetchgit/Git LFS 进度则以 `resBuildLogLine` 上报，需要从 builder progress 行提取字节或对象进度。
 2. 百分比必须是可选展示：仅在 `resProgress.fields[1] > 0` 时计算；否则显示不定进度和已完成字节。
 3. 优先用子进程归属 Source，不要仅靠 URL 或日志文本反推 Source。drvPath/store path 和 parent 链可作为一个进程构建多个目标时的补充关联键。
 4. 解析层应按 Nix 版本隔离，并忽略未知 action/type/字段；`internal-json` 没有协议版本字段，不能假定跨 Nix 版本完全兼容。

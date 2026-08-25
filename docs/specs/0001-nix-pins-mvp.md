@@ -122,7 +122,7 @@ Fake Hash 必须使用 SRI 格式且取固定值——它参与 Intermediate FOD
 
 失败的 Pin 保持上一轮的完整条目不变，成功的正常写入，退出码区分「全部成功」与「有失败但已写入」（ADR-0007）。stderr 摘要须醒目列出失败项。
 
-Checker 与取哈希使用分离的两级并发：前者默认 8 并发，后者默认串行（ADR-0008）。先完成全部 Checker，再依据指纹算出需要重算的数量并告知用户，然后进入昂贵阶段。
+Checker、Source Hash 与 Derived Hash 使用分离并发：前两者默认 8 并发，Derived Hash 默认串行（ADR-0008）。先完成全部 Checker，再依据指纹算出需要重算的数量并告知用户，然后进入昂贵阶段。
 
 ## 测试决策
 

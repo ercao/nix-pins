@@ -20,6 +20,6 @@ status: accepted
 - Pin 行使用声明中的 Pin 名和 Current/Target Version 固定位置，但不显示表头。Target Version 是 Checker 候选，不表示已经提交。
 - TTY 只动态显示活跃 Pin，Done 或 Failed 后转为静态行。Failed 行只保留失败位置，完整错误仍由最终摘要输出。
 - Done 只表示 Pin 计算完成；持久化由独立的 Writing Pins File Global Operation 表达。批量 Probe 也使用 Global Operation，不伪装成单 Pin Step。
-- 同一 Pin 的 file-transfer activity 按 Pin 汇总；只有全部总量已知时显示 `done/total`。进度行永不显示原始 URL。
+- 同一 Pin 的 file-transfer activity 按 Pin 汇总；fetchurl 的 curl 进度与 fetchgit/Git LFS 的对象进度从 `resBuildLogLine` 提取。只有总量已知时显示 `done/total`。进度行永不显示原始 URL。
 - 非 TTY 不输出动态 Pin 行或高频字节更新，但继续保留低频里程碑和完整诊断。
 - 当前全局阶段屏障与并发模型保持不变；Pin Progress 只是执行状态的投影，不把 Update 改造成逐 Pin 流水线。

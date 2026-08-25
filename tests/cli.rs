@@ -1341,7 +1341,7 @@ esac
 }
 
 #[test]
-fn hash_stage_has_an_independent_concurrency_switch() {
+fn download_stage_is_concurrent_by_default() {
     let _serial = serial();
     let dir = TempDir::new("hash-concurrency");
     fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
@@ -1372,7 +1372,7 @@ esac
     .replace("__DIR__", &dir.0.display().to_string());
     write_executable(&dir.0.join("nix"), &nix_script);
 
-    let output = run_with_env(&dir.0, &["update"], &[("NIX_PINS_HASH_JOBS", "2")]);
+    let output = run(&dir.0, &["update"]);
 
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }

@@ -1,6 +1,6 @@
-# Checker 与 Derived Hash 使用分离的两级并发
+# Checker、Source Hash 与 Derived Hash 使用分离并发
 
-两类工作的代价相差三个数量级：Checker 是数百毫秒的 HTTP 请求，Derived Hash 是可能耗时数分钟的 `nix build`，且后者自身已在打满网络与磁盘并受 Nix daemon `max-jobs` 约束。因此不共用并发池：Checker 默认 8 并发（可调），Derived Hash 默认串行，由独立开关控制。
+三类工作的代价不同：Checker 是数百毫秒的 HTTP 请求，Source Hash 主要等待下载，Derived Hash 则可能耗时数分钟并占用网络、CPU 与磁盘。因此不共用默认并发度：Checker 与 Source Hash 默认 8 并发，Derived Hash 默认串行，分别由 `NIX_PINS_CHECKER_JOBS`、`NIX_PINS_DOWNLOAD_JOBS` 与 `NIX_PINS_HASH_JOBS` 控制。
 
 先跑完全部 Checker，再依据 Vendor Inputs Fingerprint 计算真正需要重算的 Derived Hash 列表并告知数量，使用户预期等待时长。
 
@@ -11,4 +11,4 @@
 
 ## Consequences
 
-两个并发旋钮的解释成本高于一个。Derived Hash 串行使日志按包顺序可读，失败归属明确。
+三个并发旋钮的解释成本高于一个。Source Hash 默认并发避免多个独立下载串行等待；Derived Hash 串行避免多个昂贵构建互相争抢资源。

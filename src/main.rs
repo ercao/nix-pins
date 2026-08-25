@@ -208,7 +208,7 @@ fn update(
 
             let mut sources = BTreeMap::<String, BTreeMap<String, SourceResult>>::new();
             let mut source_failures = BTreeMap::<String, Vec<TaskFailure>>::new();
-            for ((pin, source), result) in run_sources(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), reporter.clone()) {
+            for ((pin, source), result) in run_sources(tasks, env_jobs("NIX_PINS_DOWNLOAD_JOBS", 8), reporter.clone()) {
                 match result {
                     Ok(result) => {
                         sources.entry(pin).or_default().insert(source, result);
