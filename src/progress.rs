@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::io::{self, IsTerminal};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PinStep {
@@ -665,6 +666,7 @@ impl Renderer {
                 self.operation.set_message(label);
                 self.operation.reset();
                 self.operation.tick();
+                self.operation.enable_steady_tick(Duration::from_millis(80));
             }
             Event::OperationFinished(status) => {
                 let label = self.operation.message().to_string();
@@ -696,6 +698,7 @@ impl Renderer {
         bar.set_style(spinner_style());
         let bar = self.multi.add(bar);
         bar.tick();
+        bar.enable_steady_tick(Duration::from_millis(80));
         self.active.insert(
             name.into(),
             ActivePin {
