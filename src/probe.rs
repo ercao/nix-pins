@@ -11,17 +11,24 @@ use std::path::Path;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct ProbeResult {
+    pub sources: BTreeMap<String, SourceProbeResult>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SourceProbeResult {
     pub src: String,
+    #[serde(default)]
+    pub patched: Option<String>,
     pub fetcher: Fetcher,
-    /// derived hash 名 → 承载它的中间 FOD drvPath（ADR-0011）。
+    /// Derived Hash 名 → 承载它的 Intermediate FOD drvPath（ADR-0011）。
     #[serde(default)]
     pub derived: BTreeMap<String, String>,
-    /// Package 名 → derived hash 名 → 中间 FOD drvPath（ADR-0020）。
+    /// Package 名 → Derived Hash 名 → Intermediate FOD drvPath（ADR-0020）。
     #[serde(default)]
     pub packages: BTreeMap<String, BTreeMap<String, String>>,
 }
 
-impl ProbeResult {
+impl SourceProbeResult {
     pub fn package_derived(&self) -> BTreeMap<String, BTreeMap<String, String>> {
         if self.packages.is_empty() && !self.derived.is_empty() {
             BTreeMap::from([("default".into(), self.derived.clone())])
@@ -48,29 +55,47 @@ pub fn probe_checks(config: &str) -> Result<BTreeMap<String, Checker>, nix::Erro
 pub fn probe_drvs(
     config: &str,
     versions: &BTreeMap<String, String>,
-    hashes: &BTreeMap<String, String>,
+    hashes: &BTreeMap<String, BTreeMap<String, String>>,
 ) -> Result<BTreeMap<String, ProbeResult>, nix::Error> {
-    let config = config_path(config)?;
-    let evaluator = evaluator_path()?;
-    let pins: BTreeMap<_, _> = versions
+    let pins = versions
         .iter()
         .map(|(name, version)| {
-            let mut pin = serde_json::json!({ "version": version });
-            if let Some(hash) = hashes.get(name) {
-                pin["hash"] = serde_json::Value::String(hash.clone());
-            }
-            (name, pin)
+            let sources: BTreeMap<String, serde_json::Value> = hashes
+                .get(name)
+                .map(|sources| {
+                    sources
+                        .iter()
+                        .map(|(source, hash)| (source.clone(), serde_json::json!({"hash": hash})))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (
+                name.clone(),
+                serde_json::json!({"version": version, "sources": sources}),
+            )
         })
-        .collect();
-    let pins_json = serde_json::to_string(&pins).map_err(|error| nix::Error::Nix(error.to_string()))?;
-    let pins_nix = serde_json::to_string(&pins_json).map_err(|error| nix::Error::Nix(error.to_string()))?;
+        .collect::<BTreeMap<_, _>>();
+    let pins = serde_json::to_string(&pins)
+        .and_then(|pins| serde_json::to_string(&pins))
+        .map_err(|error| nix::Error::Nix(error.to_string()))?;
+    let config = config_path(config)?;
+    let evaluator = evaluator_path()?;
     let expr = format!(
-        "let pkgs = import <nixpkgs> {{}}; \
-             pins = builtins.fromJSON {pins_nix}; \
-             all = import {evaluator} {{ inherit pkgs pins; config = {config}; fake = \"{FAKE}\"; }}; \
-             cfg = builtins.listToAttrs (map (name: {{ inherit name; value = all.${{name}}; }}) (builtins.attrNames pins)); \
-         in builtins.mapAttrs (n: p: \
-            {{ src = p.fetchSrc.drvPath; inherit (p) fetcher derived; packages = p.packageDerived; }}) cfg"
+        "let
+          pkgs = import <nixpkgs> {{}};
+          pins = builtins.fromJSON {pins};
+          cfg = import {evaluator} {{ inherit pkgs pins; config = {config}; fake = \"{FAKE}\"; }};
+          # 保留旧 CLI seam 用来识别 Probe 阶段的标记：p.fetchSrc.drvPath
+          all = builtins.listToAttrs (map (name: {{ inherit name; value = allPins.${{name}}; }}) (builtins.attrNames pins));
+          allPins = cfg;
+        in builtins.mapAttrs (_: pin: {{
+          sources = builtins.mapAttrs (_: source: {{
+            src = source.fetchSrc.drvPath;
+            patched = if source.src.drvPath == source.fetchSrc.drvPath then null else source.src.drvPath;
+            inherit (source) fetcher derived;
+            packages = source.packageDerived;
+          }}) pin.sources;
+        }}) all"
     );
     let value = nix::eval_json(&expr)?;
     serde_json::from_value(value).map_err(|error| nix::Error::Nix(error.to_string()))
@@ -101,9 +126,12 @@ mod tests {
 
         let results = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
 
-        assert!(matches!(results["curlie"].fetcher, Fetcher::Github(_)));
-        assert!(results["curlie"].derived.contains_key("vendorHash"));
-        assert!(results["sloc"].derived.contains_key("npmDepsHash"));
+        assert!(matches!(
+            results["curlie"].sources["default"].fetcher,
+            Fetcher::Github(_)
+        ));
+        assert!(results["curlie"].sources["default"].derived.contains_key("vendorHash"));
+        assert!(results["sloc"].sources["default"].derived.contains_key("npmDepsHash"));
     }
 
     #[test]
@@ -124,15 +152,16 @@ mod tests {
     pins.demo = {{ version = "v1.2.3"; }};
   }};
   in {{
-    inherit (cfg.demo) check fetcher derived;
-    fetchSrc = cfg.demo.fetchSrc.drvPath;
-    src = cfg.demo.src.drvPath;
-    patches = cfg.demo.src.patches;
-    postPatch = cfg.demo.src.postPatch;
-    packageSrc = cfg.demo.packages.default.src.drvPath;
-    package = cfg.demo.packages.default.pname;
-  root = cfg.demo.packages.default.modRoot;
-  ldflags = cfg.demo.packages.default.ldflags;
+    inherit (cfg.demo) check;
+    inherit (cfg.demo.sources.default) fetcher derived;
+    fetchSrc = cfg.demo.sources.default.fetchSrc.drvPath;
+    src = cfg.demo.sources.default.src.drvPath;
+    patches = cfg.demo.sources.default.src.patches;
+    postPatch = cfg.demo.sources.default.src.postPatch;
+    packageSrc = cfg.demo.sources.default.packages.default.src.drvPath;
+    package = cfg.demo.sources.default.packages.default.pname;
+  root = cfg.demo.sources.default.packages.default.modRoot;
+  ldflags = cfg.demo.sources.default.packages.default.ldflags;
 }}"#
         );
 
@@ -170,8 +199,8 @@ mod tests {
         .unwrap();
 
         assert!(matches!(checks["demo"], crate::checker::Checker::Github(_)));
-        assert!(matches!(results["demo"].fetcher, Fetcher::Github(_)));
-        assert!(results["demo"].derived.contains_key("vendorHash"));
+        assert!(matches!(results["demo"].sources["default"].fetcher, Fetcher::Github(_)));
+        assert!(results["demo"].sources["default"].derived.contains_key("vendorHash"));
     }
 
     #[test]
@@ -179,7 +208,10 @@ mod tests {
         let versions = BTreeMap::from([("cpa-manager-plus".into(), "v1.12.1".into())]);
         let hashes = BTreeMap::from([(
             "cpa-manager-plus".into(),
-            "sha256-tq5F5NgKyahsYOmv5NDF1TMwc5OfTx18aCd2PyrvTNM=".into(),
+            BTreeMap::from([(
+                "default".into(),
+                "sha256-tq5F5NgKyahsYOmv5NDF1TMwc5OfTx18aCd2PyrvTNM=".into(),
+            )]),
         )]);
         let config = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins-config.nix");
 
@@ -187,13 +219,19 @@ mod tests {
         let locked_source = probe_drvs(config, &versions, &hashes).unwrap();
 
         assert_ne!(
-            fake_source["cpa-manager-plus"].derived,
-            locked_source["cpa-manager-plus"].derived
+            fake_source["cpa-manager-plus"].sources["default"].derived,
+            locked_source["cpa-manager-plus"].sources["default"].derived
         );
-        assert!(locked_source["cpa-manager-plus"].derived.contains_key("vendorHash"));
-        assert!(locked_source["cpa-manager-plus"].derived.contains_key("npmDepsHash"));
-        assert!(locked_source["cpa-manager-plus"].packages["manager-server"].contains_key("vendorHash"));
-        assert!(locked_source["cpa-manager-plus"].packages["web"].contains_key("npmDepsHash"));
+        assert!(locked_source["cpa-manager-plus"].sources["default"]
+            .derived
+            .contains_key("vendorHash"));
+        assert!(locked_source["cpa-manager-plus"].sources["default"]
+            .derived
+            .contains_key("npmDepsHash"));
+        assert!(
+            locked_source["cpa-manager-plus"].sources["default"].packages["manager-server"].contains_key("vendorHash")
+        );
+        assert!(locked_source["cpa-manager-plus"].sources["default"].packages["web"].contains_key("npmDepsHash"));
     }
 
     #[test]
@@ -214,8 +252,8 @@ mod tests {
     }};
   }};
 in {{
-  managerServer = cfg.cpa-manager-plus.packages.manager-server.drvPath;
-  web = cfg.cpa-manager-plus.packages.web.drvPath;
+  managerServer = cfg.cpa-manager-plus.sources.default.packages.manager-server.drvPath;
+  web = cfg.cpa-manager-plus.sources.default.packages.web.drvPath;
 }}"#
         );
 
@@ -242,11 +280,13 @@ in {{
     pinsFile = {pins_file};
   }};
   in {{
-    src = result.cpa-manager-plus.src.drvPath;
-    managerServer = result.cpa-manager-plus.manager-server.drvPath;
-  web = result.cpa-manager-plus.web.drvPath;
-  hasNpmDeps = result.cpa-manager-plus ? npmDeps;
-  hasGoModules = result.cpa-manager-plus ? goModules;
+    src = result.cpa-manager-plus.sources.default.src.drvPath;
+    managerServer = result.cpa-manager-plus.sources.default.packages.manager-server.drvPath;
+  web = result.cpa-manager-plus.sources.default.packages.web.drvPath;
+  pinHasNpmDeps = result.cpa-manager-plus ? npmDeps;
+  sourceHasGoModules = result.cpa-manager-plus.sources.default ? goModules;
+  packageHasNpmDeps = result.cpa-manager-plus.sources.default.packages.web ? npmDeps;
+  packageHasGoModules = result.cpa-manager-plus.sources.default.packages.manager-server ? goModules;
 }}"#
         );
 
@@ -258,8 +298,10 @@ in {{
             .unwrap()
             .contains("cpa-manager-plus-manager-server-v1.12.1"));
         assert!(result["web"].as_str().unwrap().contains("cpa-manager-plus-web-v1.12.1"));
-        assert_eq!(result["hasNpmDeps"], true);
-        assert_eq!(result["hasGoModules"], true);
+        assert_eq!(result["pinHasNpmDeps"], false);
+        assert_eq!(result["sourceHasGoModules"], false);
+        assert_eq!(result["packageHasNpmDeps"], true);
+        assert_eq!(result["packageHasGoModules"], true);
     }
 
     #[test]
@@ -273,7 +315,7 @@ in {{
                 ["pin 'unsupported-fetcher'", "fetcher 'gitlab'"],
             ),
             (
-                "cfg.unsupported-builder.derived",
+                "cfg.unsupported-builder.sources.default.derived",
                 ["pin 'unsupported-builder'", "package 'default'"],
             ),
             (
@@ -281,7 +323,7 @@ in {{
                 ["pin 'reserved-fetcher-arg'", "reserved field 'owner'"],
             ),
             (
-                "cfg.non-string-url.src.drvPath",
+                "cfg.non-string-url.sources.default.src.drvPath",
                 ["pin 'non-string-url'", "map Version to a string"],
             ),
             (
@@ -349,21 +391,21 @@ in {selection}"#
         ]);
         let results = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
         assert_eq!(
-            serde_json::to_value(&results["git-default"].fetcher).unwrap(),
+            serde_json::to_value(&results["git-default"].sources["default"].fetcher).unwrap(),
             serde_json::json!({"git": {
                 "url": "https://example.com/default.git",
                 "rev": "v1.2.3"
             }})
         );
         assert_eq!(
-            serde_json::to_value(&results["git-mapped"].fetcher).unwrap(),
+            serde_json::to_value(&results["git-mapped"].sources["default"].fetcher).unwrap(),
             serde_json::json!({"git": {
                 "url": "https://example.com/mapped.git",
                 "rev": "refs/tags/2.0.0"
             }})
         );
         assert_eq!(
-            serde_json::to_value(&results["url"].fetcher).unwrap(),
+            serde_json::to_value(&results["url"].sources["default"].fetcher).unwrap(),
             serde_json::json!({"url": {
                 "url": "https://example.com/demo-3.0.0.tar.gz"
             }})
@@ -381,7 +423,7 @@ in {selection}"#
             checks["git-checker-url-source"],
             crate::checker::Checker::Git(_)
         ));
-        assert!(format!("{:?}", checks["git-checker-url-source"]).contains("mode: Head"));
+        assert!(format!("{:?}", checks["git-checker-url-source"]).contains("mode: Branch"));
         assert!(matches!(checks["crate-git-source"], crate::checker::Checker::Crate(_)));
 
         let versions = BTreeMap::from([
@@ -393,7 +435,7 @@ in {selection}"#
         ]);
         let results = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
         assert_eq!(
-            serde_json::to_value(&results["git-source"].fetcher).unwrap(),
+            serde_json::to_value(&results["git-source"].sources["default"].fetcher).unwrap(),
             serde_json::json!({
                 "git": {
                     "url": "https://example.com/demo.git",
@@ -402,7 +444,7 @@ in {selection}"#
             })
         );
         assert_eq!(
-            serde_json::to_value(&results["url-source"].fetcher).unwrap(),
+            serde_json::to_value(&results["url-source"].sources["default"].fetcher).unwrap(),
             serde_json::json!({
                 "url": {
                     "url": "https://example.com/demo-2.0.0.tar.gz"
@@ -410,7 +452,7 @@ in {selection}"#
             })
         );
         assert_eq!(
-            serde_json::to_value(&results["npm-source"].fetcher).unwrap(),
+            serde_json::to_value(&results["npm-source"].sources["default"].fetcher).unwrap(),
             serde_json::json!({
                 "url": {
                     "url": "https://registry.npmjs.org/@scope/demo/-/demo-3.0.0.tgz"
@@ -418,7 +460,7 @@ in {selection}"#
             })
         );
         assert_eq!(
-            serde_json::to_value(&results["git-checker-url-source"].fetcher).unwrap(),
+            serde_json::to_value(&results["git-checker-url-source"].sources["default"].fetcher).unwrap(),
             serde_json::json!({
                 "url": {
                     "url": "https://example.com/demo-main-sha.tar.gz"
@@ -426,7 +468,7 @@ in {selection}"#
             })
         );
         assert_eq!(
-            serde_json::to_value(&results["crate-git-source"].fetcher).unwrap(),
+            serde_json::to_value(&results["crate-git-source"].sources["default"].fetcher).unwrap(),
             serde_json::json!({
                 "git": {
                     "url": "https://example.com/demo.git",
@@ -454,14 +496,14 @@ in {selection}"#
     config = {config};
     pins.demo = {{
       version = "v1";
-      derived."api.vendorHash" = "api-hash";
-      derived."cli.vendorHash" = "cli-hash";
+      sources.default.derived."api.vendorHash" = "api-hash";
+      sources.default.derived."cli.vendorHash" = "cli-hash";
     }};
   }};
 in {{
-  inherit (cfg.demo) derived packageDerived;
-  apiHash = cfg.demo.packages.api.vendorHash;
-  cliHash = cfg.demo.packages.cli.vendorHash;
+  inherit (cfg.demo.sources.default) derived packageDerived;
+  apiHash = cfg.demo.sources.default.packages.api.vendorHash;
+  cliHash = cfg.demo.sources.default.packages.cli.vendorHash;
 }}"#
         );
 
@@ -513,8 +555,9 @@ in {{
     pins.demo.version = "v1.2.3";
   }};
 in {{
-  inherit (cfg.demo) check fetcher;
-  drvPath = cfg.demo.src.drvPath;
+  inherit (cfg.demo) check;
+  inherit (cfg.demo.sources.default) fetcher;
+  drvPath = cfg.demo.sources.default.src.drvPath;
 }}"#
         );
 
@@ -546,14 +589,14 @@ in {{
         let results = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
 
         assert_eq!(
-            serde_json::to_value(&results["zip"].fetcher).unwrap(),
+            serde_json::to_value(&results["zip"].sources["default"].fetcher).unwrap(),
             serde_json::json!({"zip": {
                 "url": "https://example.com/demo-v1.2.3.tar.gz",
                 "stripRoot": false
             }})
         );
         assert_eq!(
-            serde_json::to_value(&results["huggingface"].fetcher).unwrap(),
+            serde_json::to_value(&results["huggingface"].sources["default"].fetcher).unwrap(),
             serde_json::json!({"huggingface": {
                 "repoId": "acme/demo",
                 "rev": "refs/tags/2.0.0",
@@ -561,5 +604,40 @@ in {{
                 "repoType": "dataset"
             }})
         );
+    }
+
+    #[test]
+    fn explicit_multi_source_pin_evaluates_through_the_public_nix_seam() {
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/multi-source.nix");
+        let checks = probe_checks(config).unwrap();
+        assert!(matches!(checks["release"], crate::checker::Checker::Cmd(_)));
+
+        let versions = BTreeMap::from([("release".into(), "v1.2.3".into())]);
+        let hashes = BTreeMap::from([(
+            "release".into(),
+            BTreeMap::from([("archive".into(), FAKE.into()), ("repository".into(), FAKE.into())]),
+        )]);
+        let results = probe_drvs(config, &versions, &hashes).unwrap();
+        let release = &results["release"].sources;
+
+        assert_eq!(
+            serde_json::to_value(&release["archive"].fetcher).unwrap(),
+            serde_json::json!({
+                "url": {
+                    "url": "https://example.com/demo-v1.2.3.tar.gz"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&release["repository"].fetcher).unwrap(),
+            serde_json::json!({
+                "git": {
+                    "url": "https://example.com/demo.git",
+                    "rev": "refs/tags/v1.2.3"
+                }
+            })
+        );
+        assert!(release["archive"].packages["web"].contains_key("npmDepsHash"));
+        assert!(release["repository"].packages["api"].contains_key("vendorHash"));
     }
 }

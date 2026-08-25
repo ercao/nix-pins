@@ -1,29 +1,45 @@
-# nix-pins reader —— 把 Pins File 转为可用的 src 与哈希属性（ADR-0002）。
-# 传入 config 时，额外合并处理后的 src、包与 Intermediate FOD（如 npmDeps）。
+# nix-pins Reader —— 将 schema v2 Pins File 转为严格的 Pin → Sources → Source 结构（ADR-0002、ADR-0021）。
+# 传入 config 时，各 Source 额外暴露补丁后的 src、Package 与 Intermediate FOD。
 {
   pkgs,
   file ? ./pins.json,
   config ? null,
 }: let
   data = builtins.fromJSON (builtins.readFile file);
-  mkSrc = name: p: let
-    f = p.fetcher;
+  schemaVersion = data.schemaVersion or null;
+  checked =
+    if schemaVersion == 2
+    then data
+    else throw "nix-pins: unsupported Pins File schemaVersion ${toString schemaVersion}; expected 2";
+  mkSrc = pinName: sourceName: source: let
+    fetcher = source.fetcher;
   in
-    if f ? github
-    then pkgs.fetchFromGitHub (f.github // {inherit (p) hash;})
-    else if f ? git
-    then pkgs.fetchgit (f.git // {inherit (p) hash;})
-    else if f ? url
-    then pkgs.fetchurl (f.url // {inherit (p) hash;})
-    else throw "nix-pins: unknown fetcher for ${name}";
-
-  pins =
-    builtins.mapAttrs (
-      name: p: {pname = name; inherit (p) version; src = mkSrc name p;} // (p.derived or {})
-    )
-    data.pins;
-
-  packages =
+    if fetcher ? github
+    then pkgs.fetchFromGitHub (fetcher.github // {inherit (source) hash;})
+    else if fetcher ? git
+    then pkgs.fetchgit (fetcher.git // {inherit (source) hash;})
+    else if fetcher ? huggingface
+    then pkgs.fetchFromHuggingFace (fetcher.huggingface // {inherit (source) hash;})
+    else if fetcher ? url
+    then pkgs.fetchurl (fetcher.url // {inherit (source) hash;})
+    else if fetcher ? zip
+    then pkgs.fetchzip (fetcher.zip // {inherit (source) hash;})
+    else throw "nix-pins: pin '${pinName}' source '${sourceName}' has unknown fetcher";
+  locked =
+    builtins.mapAttrs
+    (pinName: pin: {
+      inherit (pin) version;
+      sources =
+        builtins.mapAttrs
+        (sourceName: source: {
+          inherit (source) fetcher hash;
+          derived = source.derived or {};
+          src = mkSrc pinName sourceName source;
+        })
+        pin.sources;
+    })
+    checked.pins;
+  evaluated =
     if config == null
     then {}
     else
@@ -32,4 +48,14 @@
         pinsFile = file;
       };
 in
-  builtins.mapAttrs (name: pin: pin // (packages.${name} or {})) pins
+  builtins.mapAttrs
+  (pinName: pin:
+    pin
+    // {
+      sources =
+        builtins.mapAttrs
+        (sourceName: source:
+          source // (evaluated.${pinName}.sources.${sourceName} or {}))
+        pin.sources;
+    })
+  locked

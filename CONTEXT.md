@@ -5,19 +5,27 @@
 ## Language
 
 **Pin**：
-配置中一个被追踪的上游包条目，以及它当前锁定的版本与哈希集合。
+配置中一个被追踪的上游版本单元，以及它当前锁定的 Version 与具名 Source 集合。Pin 拥有一个 Checker，并作为不可拆分的原子 Update 单元。
 _Avoid_：package, entry, dependency
 
+**Source**：
+Pin 中一个具名的源码获取单元，拥有自己的 Fetcher、源码 Hash 与 Package 集合；同一 Pin 的所有 Source 共用该 Pin 的 Version，且 Source 不是独立的 Selection 或 Update 单元。
+_Avoid_：pin, fetcher, package
+
 **Package**：
-Pin 声明中 `packages` 下的一个具名构建产物。Package 共享所属 Pin 的 Version 与 Source，但拥有自己的 Builder、Intermediate FOD 和 Derived Hash；`default` 也是 Package 名。
+Source 声明中 `packages` 下的一个具名构建产物。Package 共享所属 Pin 的 Version 与所属 Source，但拥有自己的 Builder、Intermediate FOD 和 Derived Hash；`default` 也是 Package 名。
 _Avoid_：pin, source, output
 
 **Pin Progress**：
-交互式 Update 中以 Pin 为一级展示单元的处理状态，固定使用声明中的 Pin 名作为行名称，并显示当前锁定 Version、Checker 选出的目标 Version，以及当前处理步骤。Fetcher target、URL、drvPath 与 Package 名都不替代 Pin 名。Checker 完成前目标 Version 可能未知，Fetcher 求值前也不存在可展示的 Source，因此进度不以 Source 为一级分组。
+交互式 Update 中以 Pin 为一级展示单元的处理状态，固定使用声明中的 Pin 名作为行名称，并显示当前锁定 Version、Checker 选出的目标 Version，以及 Checker 与整体提交状态。Fetcher target、URL、drvPath、Source 名与 Package 名都不替代 Pin 名。
 _Avoid_：source progress, download task, stage row
 
+**Source Progress**：
+Pin Progress 下表示具名 Source 的子节点，承载 Fetcher、Source Hash、补丁与该 Source 的 Nix 详情。唯一名为 `default` 的 Source 可以折叠到 Pin 行；Source 树只在 Pin 活跃时存在。
+_Avoid_：pin progress, package progress, fetcher task
+
 **Package Progress**：
-Pin Progress 在 Derived Hash 工作期间显示的 Package 子节点。唯一名为 `default` 的 Package 不展开，Derived Hash 直接显示在父级 Pin；存在多个 Package 或唯一 Package 不是 `default` 时才展开树，父级显示 Hashing Packages。Package Progress 使用声明中的 Package 名，并只承载该 Package 的 Derived Hash 步骤与 Nix 详情；Checker、Version、Source 与提交状态仍属于父级 Pin。Package 树只在父级活跃时存在，Done 或 Failed 后折叠成一条静态 Pin 行；失败定位保留 `Package/Derived Hash`。同一 Pin 内的 Package Derived Hash 保持顺序执行，树形展示不表示 Package 级并发。
+Source Progress 在 Derived Hash 工作期间显示的 Package 子节点。唯一名为 `default` 的 Package 可以折叠到所属 Source 行；Package Progress 使用声明中的 Package 名，并只承载该 Package 的 Derived Hash 步骤与 Nix 详情。Checker、Version 与提交状态属于 Pin，Fetcher、Source Hash 与补丁属于 Source。
 _Avoid_：pin progress, package build result, inferred hash prefix
 
 **Pin Step**：

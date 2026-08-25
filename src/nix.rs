@@ -184,7 +184,10 @@ fn format_mib(bytes: u64) -> String {
     format!("{:.1}", bytes as f64 / MIB)
 }
 
-pub fn resolve_hash(drv_path: &str, mut progress: impl FnMut(Option<String>)) -> Result<String, Error> {
+fn build(
+    drv_path: &str,
+    mut progress: impl FnMut(Option<String>),
+) -> Result<(std::process::ExitStatus, String), Error> {
     use std::io::{BufRead, BufReader, Read};
     use std::process::Stdio;
 
@@ -245,7 +248,7 @@ pub fn resolve_hash(drv_path: &str, mut progress: impl FnMut(Option<String>)) ->
     if let Some(error) = stderr_error {
         return Err(Error::Nix(error.to_string()));
     }
-    wait_result.map_err(|error| Error::Nix(error.to_string()))?;
+    let status = wait_result.map_err(|error| Error::Nix(error.to_string()))?;
     let stdout = stdout
         .map_err(|_| Error::Nix("读取 Nix stdout 的线程异常退出".into()))?
         .map_err(|error| Error::Nix(error.to_string()))?;
@@ -257,7 +260,22 @@ pub fn resolve_hash(drv_path: &str, mut progress: impl FnMut(Option<String>)) ->
     }
 
     // 退出码不可作为判据：404 的 fetchurl 曾以 0 退出且无 got 行（ADR-0003）。
+    Ok((status, diagnostics))
+}
+
+pub fn resolve_hash(drv_path: &str, progress: impl FnMut(Option<String>)) -> Result<String, Error> {
+    let (_, diagnostics) = build(drv_path, progress)?;
+    // 退出码不可作为判据：404 的 fetchurl 曾以 0 退出且无 got 行（ADR-0003）。
     parse_got(&diagnostics).ok_or(Error::NoGotLine(diagnostics))
+}
+
+pub fn realize(drv_path: &str, progress: impl FnMut(Option<String>)) -> Result<(), Error> {
+    let (status, diagnostics) = build(drv_path, progress)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::Nix(diagnostics))
+    }
 }
 
 /// 从 hash mismatch 输出中提取 got 行的哈希。

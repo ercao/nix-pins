@@ -17,24 +17,31 @@ use std::process::ExitCode;
 use std::sync::{mpsc, Arc, Mutex};
 
 struct SourceTask {
-    name: String,
-    version: String,
-    probe: Option<probe::ProbeResult>,
-    previous: Option<pins::Pin>,
+    pin: String,
+    source: String,
+    expanded: bool,
+    probe: Option<probe::SourceProbeResult>,
+    previous: Option<pins::Source>,
 }
 
 struct SourceResult {
-    version: String,
+    expanded: bool,
     fetcher: pins::Fetcher,
     hash: String,
     fingerprint: String,
-    previous: Option<pins::Pin>,
+    previous: Option<pins::Source>,
 }
 
 struct DerivedTask {
-    name: String,
-    source: SourceResult,
-    probe: Option<probe::ProbeResult>,
+    pin: String,
+    source: String,
+    source_result: SourceResult,
+    probe: Option<probe::SourceProbeResult>,
+}
+
+struct TaskFailure {
+    error: String,
+    location: String,
 }
 
 struct UpdateResult {
@@ -160,82 +167,173 @@ fn update(
     if !versions.is_empty() {
         let config = config.display().to_string();
         let resolving = progress.operation(format!("Resolving sources · {} pins", versions.len()));
-        let source_probes = probe::probe_drvs(&config, &versions, &BTreeMap::new());
-        match source_probes {
-            Ok(mut source_probes) => {
-                resolving.finish();
-                let source_recalculations = count_source_recalculations(pins, &source_probes);
-                let tasks = versions
-                    .into_iter()
-                    .map(|(name, version)| SourceTask {
-                        previous: pins.pins.get(&name).cloned(),
-                        probe: source_probes.remove(&name),
-                        name,
-                        version,
-                    })
-                    .collect();
-                let mut sources = BTreeMap::new();
-                for (name, result) in run_sources(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), reporter.clone()) {
-                    match result {
-                        Ok(source) => {
-                            sources.insert(name, source);
-                        }
-                        Err(error) => {
-                            failures.insert(name, error);
-                        }
-                    }
+        let empty_hashes = BTreeMap::<String, BTreeMap<String, String>>::new();
+        let (mut source_probes, source_probe_failures) =
+            probe_pins(&config, &versions, &empty_hashes, env_jobs("NIX_PINS_HASH_JOBS", 1));
+        resolving.finish();
+        for (pin, error) in source_probe_failures {
+            reporter.failed(&pin, "Resolving sources");
+            failures.insert(pin, error);
+        }
+        {
+            let source_recalculations = count_source_recalculations(pins, &source_probes);
+            let mut expected_sources = BTreeMap::new();
+            let mut tasks = Vec::new();
+            for pin in versions.keys() {
+                let Some(probe) = source_probes.remove(pin) else {
+                    failures
+                        .entry(pin.clone())
+                        .or_insert_with(|| format!("Probe did not return pin '{pin}'"));
+                    continue;
+                };
+                expected_sources.insert(pin.clone(), probe.sources.len());
+                let expanded = probe.sources.len() != 1 || !probe.sources.contains_key("default");
+                if expanded {
+                    reporter.sources(pin, probe.sources.keys().cloned().collect());
                 }
-
-                if sources.is_empty() {
-                    progress.message(format!("{source_recalculations} hashes need recalculation"));
-                } else {
-                    let successful_versions = sources
-                        .iter()
-                        .map(|(name, source)| (name.clone(), source.version.clone()))
-                        .collect();
-                    let source_hashes = sources
-                        .iter()
-                        .map(|(name, source)| (name.clone(), source.hash.clone()))
-                        .collect();
-                    let resolving = progress.operation(format!("Resolving derived hashes · {} pins", sources.len()));
-                    let derived_probes = probe::probe_drvs(&config, &successful_versions, &source_hashes);
-                    match derived_probes {
-                        Ok(mut derived_probes) => {
-                            resolving.finish();
-                            let recalculations =
-                                source_recalculations + count_derived_recalculations(pins, &derived_probes);
-                            progress.message(format!("{recalculations} hashes need recalculation"));
-                            let tasks = sources
-                                .into_iter()
-                                .map(|(name, source)| DerivedTask {
-                                    probe: derived_probes.remove(&name),
-                                    name,
-                                    source,
-                                })
-                                .collect();
-                            for (name, result) in
-                                run_derived(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), reporter.clone())
-                            {
-                                match result {
-                                    Ok(pin) => {
-                                        pins.pins.insert(name, pin);
-                                    }
-                                    Err(error) => {
-                                        failures.insert(name, error);
-                                    }
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            resolving.fail();
-                            return Err(nix_error(error));
-                        }
-                    }
+                for (source, source_probe) in probe.sources {
+                    tasks.push(SourceTask {
+                        previous: pins
+                            .pins
+                            .get(pin)
+                            .and_then(|previous| previous.sources.get(&source))
+                            .cloned(),
+                        pin: pin.clone(),
+                        source,
+                        expanded,
+                        probe: Some(source_probe),
+                    });
                 }
             }
-            Err(error) => {
-                resolving.fail();
-                return Err(nix_error(error));
+
+            let mut sources = BTreeMap::<String, BTreeMap<String, SourceResult>>::new();
+            let mut source_failures = BTreeMap::<String, Vec<TaskFailure>>::new();
+            for ((pin, source), result) in run_sources(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), reporter.clone()) {
+                match result {
+                    Ok(result) => {
+                        sources.entry(pin).or_default().insert(source, result);
+                    }
+                    Err(failure) => source_failures.entry(pin).or_default().push(failure),
+                }
+            }
+            for (pin, pin_failures) in source_failures {
+                reporter.failed(
+                    &pin,
+                    pin_failures
+                        .iter()
+                        .map(|failure| failure.location.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+                failures.insert(
+                    pin,
+                    pin_failures
+                        .into_iter()
+                        .map(|failure| failure.error)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
+            sources.retain(|pin, resolved| {
+                !failures.contains_key(pin) && expected_sources.get(pin) == Some(&resolved.len())
+            });
+
+            if sources.is_empty() {
+                progress.message(format!("{source_recalculations} hashes need recalculation"));
+            } else {
+                let successful_versions = sources.keys().map(|pin| (pin.clone(), versions[pin].clone())).collect();
+                let source_hashes = sources
+                    .iter()
+                    .map(|(pin, sources)| {
+                        (
+                            pin.clone(),
+                            sources
+                                .iter()
+                                .map(|(source, result)| (source.clone(), result.hash.clone()))
+                                .collect(),
+                        )
+                    })
+                    .collect();
+                let resolving = progress.operation(format!("Resolving derived hashes · {} pins", sources.len()));
+                let (mut derived_probes, derived_probe_failures) = probe_pins(
+                    &config,
+                    &successful_versions,
+                    &source_hashes,
+                    env_jobs("NIX_PINS_HASH_JOBS", 1),
+                );
+                resolving.finish();
+                for (pin, error) in derived_probe_failures {
+                    reporter.failed(&pin, "Resolving derived hashes");
+                    failures.insert(pin, error);
+                }
+                {
+                    let recalculations = source_recalculations + count_derived_recalculations(pins, &derived_probes);
+                    progress.message(format!("{recalculations} hashes need recalculation"));
+
+                    let mut tasks = Vec::new();
+                    for (pin, pin_sources) in sources {
+                        if failures.contains_key(&pin) {
+                            continue;
+                        }
+                        let mut source_probes = derived_probes
+                            .remove(&pin)
+                            .map(|probe| probe.sources)
+                            .unwrap_or_default();
+                        for (source, source_result) in pin_sources {
+                            tasks.push(DerivedTask {
+                                probe: source_probes.remove(&source),
+                                pin: pin.clone(),
+                                source,
+                                source_result,
+                            });
+                        }
+                    }
+
+                    let mut resolved = BTreeMap::<String, BTreeMap<String, pins::Source>>::new();
+                    let mut derived_failures = BTreeMap::<String, Vec<TaskFailure>>::new();
+                    for ((pin, source), result) in
+                        run_derived(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), reporter.clone())
+                    {
+                        match result {
+                            Ok(result) => {
+                                resolved.entry(pin).or_default().insert(source, result);
+                            }
+                            Err(task_failures) => derived_failures.entry(pin).or_default().extend(task_failures),
+                        }
+                    }
+                    for (pin, pin_failures) in derived_failures {
+                        reporter.failed(
+                            &pin,
+                            pin_failures
+                                .iter()
+                                .map(|failure| failure.location.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        );
+                        failures.insert(
+                            pin,
+                            pin_failures
+                                .into_iter()
+                                .map(|failure| failure.error)
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        );
+                    }
+
+                    for (pin, sources) in resolved {
+                        if failures.contains_key(&pin) || expected_sources.get(&pin) != Some(&sources.len()) {
+                            continue;
+                        }
+                        pins.pins.insert(
+                            pin.clone(),
+                            pins::Pin {
+                                version: versions[&pin].clone(),
+                                sources,
+                            },
+                        );
+                        reporter.done(&pin, None);
+                    }
+                }
             }
         }
     }
@@ -248,25 +346,71 @@ fn update(
     } else {
         writing.fail();
     }
+
     save_result.map(|()| UpdateResult { processed, failures })
+}
+
+fn probe_pins(
+    config: &str,
+    versions: &BTreeMap<String, String>,
+    hashes: &BTreeMap<String, BTreeMap<String, String>>,
+    jobs: usize,
+) -> (BTreeMap<String, probe::ProbeResult>, BTreeMap<String, String>) {
+    let config = config.to_owned();
+    let hashes = hashes.clone();
+    let tasks = versions
+        .iter()
+        .map(|(pin, version)| (pin.clone(), version.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let results = parallel_map(tasks, jobs, move |pin, version| {
+        let versions = BTreeMap::from([(pin.clone(), version)]);
+        let hashes = hashes
+            .get(pin)
+            .map(|sources| BTreeMap::from([(pin.clone(), sources.clone())]))
+            .unwrap_or_default();
+        probe::probe_drvs(&config, &versions, &hashes)
+            .map_err(nix_error)
+            .and_then(|mut results| {
+                results
+                    .remove(pin)
+                    .ok_or_else(|| format!("Probe did not return pin '{pin}'"))
+            })
+    });
+    let mut probes = BTreeMap::new();
+    let mut failures = BTreeMap::new();
+    for (pin, result) in results {
+        match result {
+            Ok(probe) => {
+                probes.insert(pin, probe);
+            }
+            Err(error) => {
+                failures.insert(pin, error);
+            }
+        }
+    }
+    (probes, failures)
 }
 
 fn run_sources(
     tasks: Vec<SourceTask>,
     jobs: usize,
     reporter: progress::Reporter,
-) -> BTreeMap<String, Result<SourceResult, String>> {
+) -> BTreeMap<(String, String), Result<SourceResult, TaskFailure>> {
     parallel_map(
-        tasks.into_iter().map(|task| (task.name.clone(), task)),
+        tasks
+            .into_iter()
+            .map(|task| ((task.pin.clone(), task.source.clone()), task)),
         jobs,
-        move |name, task| {
+        move |(pin, source), task| {
+            let expanded = task.expanded;
             let result = resolve_source(task, &reporter);
-            if result.is_err() {
-                reporter.failed(name, "Hashing source");
-            } else {
-                reporter.pause(name);
+            if result.is_ok() && !expanded {
+                reporter.pause(pin);
             }
-            result
+            result.map_err(|error| TaskFailure {
+                error: format!("Source '{source}' Hashing source: {error}"),
+                location: format!("Source {source}/Hashing source"),
+            })
         },
     )
 }
@@ -274,27 +418,58 @@ fn run_sources(
 fn resolve_source(task: SourceTask, reporter: &progress::Reporter) -> Result<SourceResult, String> {
     let probe = task
         .probe
-        .ok_or_else(|| format!("Probe did not return {}", task.name))?;
-    let hash = if let Some(pin) = task
+        .ok_or_else(|| format!("Probe did not return source '{}'", task.source))?;
+    let fetcher = probe.fetcher.label().to_owned();
+    let hash = if let Some(source) = task
         .previous
         .as_ref()
-        .filter(|pin| pin.fingerprints.get("hash") == Some(&probe.src))
+        .filter(|source| source.fingerprints.get("hash") == Some(&probe.src))
     {
-        reporter.step(&task.name, progress::PinStep::SourceReused);
-        pin.hash.clone()
+        if task.expanded {
+            reporter.source_step(&task.pin, &task.source, progress::PinStep::SourceReused);
+            reporter.source_detail(&task.pin, &task.source, Some(fetcher.clone()));
+        } else {
+            reporter.step(&task.pin, progress::PinStep::SourceReused);
+            reporter.detail(&task.pin, Some(fetcher.clone()));
+        }
+        source.hash.clone()
     } else {
-        reporter.step(&task.name, progress::PinStep::HashingSource);
-        let name = task.name.clone();
+        if task.expanded {
+            reporter.source_step(&task.pin, &task.source, progress::PinStep::HashingSource);
+            reporter.source_detail(&task.pin, &task.source, Some(fetcher.clone()));
+        } else {
+            reporter.step(&task.pin, progress::PinStep::HashingSource);
+            reporter.detail(&task.pin, Some(fetcher.clone()));
+        }
+        let pin = task.pin.clone();
+        let source = task.source.clone();
+        let expanded = task.expanded;
+        let fetcher_detail = fetcher.clone();
         let details = reporter.clone();
         let hash = nix::resolve_hash(&probe.src, move |detail| {
-            details.detail(&name, detail);
+            let detail = Some(match detail {
+                Some(detail) => format!("{fetcher_detail} · {detail}"),
+                None => fetcher_detail.clone(),
+            });
+            if expanded {
+                details.source_detail(&pin, &source, detail);
+            } else {
+                details.detail(&pin, detail);
+            }
         })
         .map_err(nix_error)?;
-        reporter.step(&task.name, progress::PinStep::SourceReady);
+        if task.expanded {
+            reporter.source_step(&task.pin, &task.source, progress::PinStep::SourceReady);
+            reporter.source_detail(&task.pin, &task.source, Some(fetcher.clone()));
+        } else {
+            reporter.step(&task.pin, progress::PinStep::SourceReady);
+            reporter.detail(&task.pin, Some(fetcher.clone()));
+        }
         hash
     };
+
     Ok(SourceResult {
-        version: task.version,
+        expanded: task.expanded,
         fetcher: probe.fetcher,
         hash,
         fingerprint: probe.src,
@@ -306,81 +481,168 @@ fn run_derived(
     tasks: Vec<DerivedTask>,
     jobs: usize,
     reporter: progress::Reporter,
-) -> BTreeMap<String, Result<pins::Pin, String>> {
+) -> BTreeMap<(String, String), Result<pins::Source, Vec<TaskFailure>>> {
     parallel_map(
-        tasks.into_iter().map(|task| (task.name.clone(), task)),
+        tasks
+            .into_iter()
+            .map(|task| ((task.pin.clone(), task.source.clone()), task)),
         jobs,
         move |_, task| resolve_derived(task, &reporter),
     )
 }
 
-fn resolve_derived(task: DerivedTask, reporter: &progress::Reporter) -> Result<pins::Pin, String> {
+fn resolve_derived(task: DerivedTask, reporter: &progress::Reporter) -> Result<pins::Source, Vec<TaskFailure>> {
     let Some(probe) = task.probe else {
-        reporter.failed(&task.name, "Resolving derived hashes");
-        return Err(format!("Probe did not return {}", task.name));
+        return Err(vec![TaskFailure {
+            error: format!("Source '{}': Probe did not return source", task.source),
+            location: format!("Source {}/Resolving derived hashes", task.source),
+        }]);
     };
+
+    if let Some(patched) = &probe.patched {
+        if task.source_result.expanded {
+            reporter.source_step(&task.pin, &task.source, progress::PinStep::PatchingSource);
+            reporter.source_detail(&task.pin, &task.source, Some(task.source_result.fetcher.label().into()));
+        } else {
+            reporter.step(&task.pin, progress::PinStep::PatchingSource);
+            reporter.detail(&task.pin, Some(task.source_result.fetcher.label().into()));
+        }
+        let pin = task.pin.clone();
+        let source = task.source.clone();
+        let expanded = task.source_result.expanded;
+        let fetcher = task.source_result.fetcher.label().to_owned();
+        let details = reporter.clone();
+        if let Err(error) = nix::realize(patched, move |detail| {
+            let detail = Some(match detail {
+                Some(detail) => format!("{fetcher} · {detail}"),
+                None => fetcher.clone(),
+            });
+            if expanded {
+                details.source_detail(&pin, &source, detail);
+            } else {
+                details.detail(&pin, detail);
+            }
+        }) {
+            return Err(vec![TaskFailure {
+                error: format!("Source '{}': Applying patches: {}", task.source, nix_error(error)),
+                location: format!("Source {}/Applying patches", task.source),
+            }]);
+        }
+    }
+
     let packages = probe.package_derived();
     let tree = !packages.is_empty() && (packages.len() != 1 || !packages.contains_key("default"));
     if tree {
-        reporter.packages(&task.name, packages.keys().cloned().collect());
+        if task.source_result.expanded {
+            reporter.source_packages(&task.pin, &task.source, packages.keys().cloned().collect());
+        } else {
+            reporter.packages(&task.pin, packages.keys().cloned().collect());
+        }
     }
 
     let mut derived = BTreeMap::new();
-    let mut fingerprints = BTreeMap::from([("hash".into(), task.source.fingerprint)]);
+    let mut fingerprints = BTreeMap::from([("hash".into(), task.source_result.fingerprint)]);
+    let mut failures = Vec::new();
     for (package, hashes) in &packages {
         for (key, drv_path) in hashes {
             let package_prefix = format!("{package}.");
             let display_key = key.strip_prefix(&package_prefix).unwrap_or(key);
             let reused = task
-                .source
+                .source_result
                 .previous
                 .as_ref()
-                .filter(|pin| pin.fingerprints.get(key) == Some(drv_path))
-                .and_then(|pin| pin.derived.get(key))
+                .filter(|source| source.fingerprints.get(key) == Some(drv_path))
+                .and_then(|source| source.derived.get(key))
                 .cloned();
             let hash = if let Some(hash) = reused {
                 if tree {
-                    reporter.package_reused(&task.name, package, display_key);
+                    if task.source_result.expanded {
+                        reporter.source_package_reused(&task.pin, &task.source, package, display_key);
+                    } else {
+                        reporter.package_reused(&task.pin, package, display_key);
+                    }
+                } else if task.source_result.expanded {
+                    reporter.source_step(
+                        &task.pin,
+                        &task.source,
+                        progress::PinStep::DerivedReused(display_key.into()),
+                    );
                 } else {
-                    reporter.step(&task.name, progress::PinStep::DerivedReused(display_key.into()));
+                    reporter.step(&task.pin, progress::PinStep::DerivedReused(display_key.into()));
                 }
                 hash
             } else {
                 if tree {
-                    reporter.package_active(&task.name, package, display_key);
+                    if task.source_result.expanded {
+                        reporter.source_package_active(&task.pin, &task.source, package, display_key);
+                    } else {
+                        reporter.package_active(&task.pin, package, display_key);
+                    }
+                } else if task.source_result.expanded {
+                    reporter.source_step(
+                        &task.pin,
+                        &task.source,
+                        progress::PinStep::HashingDerived(display_key.into()),
+                    );
                 } else {
-                    reporter.step(&task.name, progress::PinStep::HashingDerived(display_key.into()));
+                    reporter.step(&task.pin, progress::PinStep::HashingDerived(display_key.into()));
                 }
-                let name = task.name.clone();
+                let pin = task.pin.clone();
+                let source = task.source.clone();
+                let expanded = task.source_result.expanded;
                 let package = package.clone();
                 let progress_package = package.clone();
                 let details = reporter.clone();
                 let result = nix::resolve_hash(drv_path, move |detail| {
                     if tree {
-                        details.package_detail(&name, &progress_package, detail);
+                        if expanded {
+                            details.source_package_detail(&pin, &source, &progress_package, detail);
+                        } else {
+                            details.package_detail(&pin, &progress_package, detail);
+                        }
+                    } else if expanded {
+                        details.source_detail(&pin, &source, detail);
                     } else {
-                        details.detail(&name, detail);
+                        details.detail(&pin, detail);
                     }
                 })
                 .map_err(|error| hash_error(key, error));
                 match result {
                     Ok(hash) => {
                         if tree {
-                            reporter.package_ready(&task.name, &package, display_key);
+                            if task.source_result.expanded {
+                                reporter.source_package_ready(&task.pin, &task.source, &package, display_key);
+                            } else {
+                                reporter.package_ready(&task.pin, &package, display_key);
+                            }
                         }
                         hash
                     }
                     Err(error) => {
                         if tree {
-                            reporter.package_failed(&task.name, &package, display_key);
+                            if task.source_result.expanded {
+                                reporter.source_package_failed(&task.pin, &task.source, &package, display_key);
+                            } else {
+                                reporter.package_failed(&task.pin, &package, display_key);
+                            }
                         }
-                        let location = if tree {
-                            format!("{package}/{display_key}")
+                        let location = if task.source_result.expanded && tree {
+                            format!("Source {}/Package {package}/Derived Hash {display_key}", task.source)
+                        } else if task.source_result.expanded {
+                            format!("Source {}/Derived Hash {display_key}", task.source)
+                        } else if tree {
+                            format!("Package {package}/Derived Hash {display_key}")
                         } else {
                             display_key.into()
                         };
-                        reporter.failed(&task.name, location);
-                        return Err(error);
+                        failures.push(TaskFailure {
+                            error: format!(
+                                "Source '{}': Package '{package}' Derived Hash '{display_key}': {error}",
+                                task.source
+                            ),
+                            location,
+                        });
+                        continue;
                     }
                 }
             };
@@ -388,14 +650,17 @@ fn resolve_derived(task: DerivedTask, reporter: &progress::Reporter) -> Result<p
             fingerprints.insert(key.clone(), drv_path.clone());
         }
     }
-    reporter.done(&task.name, tree.then_some(packages.len()));
-    Ok(pins::Pin {
-        version: task.source.version,
-        fetcher: task.source.fetcher,
-        hash: task.source.hash,
-        derived,
-        fingerprints,
-    })
+
+    if failures.is_empty() {
+        Ok(pins::Source {
+            fetcher: task.source_result.fetcher,
+            hash: task.source_result.hash,
+            derived,
+            fingerprints,
+        })
+    } else {
+        Err(failures)
+    }
 }
 
 fn run_checkers(
@@ -421,7 +686,7 @@ fn run_checkers(
 
 fn parallel_map<K, T, R, I, F>(tasks: I, jobs: usize, function: F) -> BTreeMap<K, R>
 where
-    K: AsRef<str> + Ord + Send + 'static,
+    K: Ord + Send + 'static,
     T: Send + 'static,
     R: Send + 'static,
     I: IntoIterator<Item = (K, T)>,
@@ -459,9 +724,18 @@ where
 fn count_source_recalculations(pins: &pins::PinsFile, probe_results: &BTreeMap<String, probe::ProbeResult>) -> usize {
     probe_results
         .iter()
-        .map(|(name, probe)| {
-            let previous = pins.pins.get(name);
-            usize::from(previous.and_then(|pin| pin.fingerprints.get("hash")) != Some(&probe.src))
+        .map(|(pin, probe)| {
+            probe
+                .sources
+                .iter()
+                .filter(|(source, result)| {
+                    pins.pins
+                        .get(pin)
+                        .and_then(|pin| pin.sources.get(*source))
+                        .and_then(|source| source.fingerprints.get("hash"))
+                        != Some(&result.src)
+                })
+                .count()
         })
         .sum()
 }
@@ -469,14 +743,22 @@ fn count_source_recalculations(pins: &pins::PinsFile, probe_results: &BTreeMap<S
 fn count_derived_recalculations(pins: &pins::PinsFile, probe_results: &BTreeMap<String, probe::ProbeResult>) -> usize {
     probe_results
         .iter()
-        .map(|(name, probe)| {
-            let previous = pins.pins.get(name);
+        .map(|(pin, probe)| {
             probe
-                .package_derived()
-                .values()
-                .flat_map(|derived| derived.iter())
-                .filter(|(key, fingerprint)| previous.and_then(|pin| pin.fingerprints.get(*key)) != Some(*fingerprint))
-                .count()
+                .sources
+                .iter()
+                .map(|(source, result)| {
+                    let previous = pins.pins.get(pin).and_then(|pin| pin.sources.get(source));
+                    result
+                        .package_derived()
+                        .values()
+                        .flat_map(|derived| derived.iter())
+                        .filter(|(key, fingerprint)| {
+                            previous.and_then(|source| source.fingerprints.get(*key)) != Some(*fingerprint)
+                        })
+                        .count()
+                })
+                .sum::<usize>()
         })
         .sum()
 }

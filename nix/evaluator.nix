@@ -74,7 +74,7 @@
     then let
       args = validateFields pinName "git Checker" ["target" "url" "mode" "branch" "ref" "include" "exclude" "sort"] rawArgs;
       url = targets.field pinName "git Checker" "url" args;
-        mode = args.mode or "head";
+      mode = args.mode or "head";
       branch = args.branch or null;
       ref = args.ref or null;
       include = args.include or null;
@@ -141,16 +141,36 @@
   };
   declarations = configFunction (builtins.intersectAttrs (builtins.functionArgs configFunction) configArguments);
 
+  normalizeSource = pinName: sourceName: declaration: let
+    context = "pin.mk source '${sourceName}'";
+    args =
+      if builtins.isAttrs declaration
+      then validateFields pinName context ["fetcher" "patches" "postPatch" "packages"] declaration
+      else throw "nix-pins: pin '${pinName}' source '${sourceName}' must be an attribute set";
+  in {
+    fetcher = required pinName context "fetcher" args;
+    patches = args.patches or [];
+    postPatch = args.postPatch or "";
+    packages = args.packages or {};
+  };
+  normalizeSources = pinName: args:
+    if args ? sources
+    then
+      if !builtins.isAttrs args.sources
+      then throw "nix-pins: pin '${pinName}' pin.mk field 'sources' must be an attribute set"
+      else if args.sources == {}
+      then throw "nix-pins: pin '${pinName}' pin.mk field 'sources' must not be empty"
+      else builtins.mapAttrs (normalizeSource pinName) args.sources
+    else {
+      default = normalizeSource pinName "default" (builtins.removeAttrs args ["checker" "sources"]);
+    };
   normalizePin = pinName: declaration:
     if declaration._type or null == "pin"
     then let
-      args = validateFields pinName "pin.mk" ["checker" "fetcher" "patches" "postPatch" "packages"] declaration.args;
+      args = validateFields pinName "pin.mk" ["checker" "sources" "fetcher" "patches" "postPatch" "packages"] declaration.args;
     in {
       checker = required pinName "pin.mk" "checker" args;
-      fetcher = required pinName "pin.mk" "fetcher" args;
-      patches = args.patches or [];
-      postPatch = args.postPatch or "";
-      packages = args.packages or {};
+      sources = normalizeSources pinName args;
     }
     else if declaration._type or null == "github"
     then let
@@ -160,58 +180,73 @@
       fetcherArgs = builtins.removeAttrs args ["target" "owner" "repo" "patches" "postPatch" "packages"] // target;
     in {
       checker = checker.github checkerArgs;
-      fetcher = fetchers.constructors.github fetcherArgs;
-      patches = args.patches or [];
-      postPatch = args.postPatch or "";
-      packages = args.packages or {};
+      sources.default = {
+        fetcher = fetchers.constructors.github fetcherArgs;
+        patches = args.patches or [];
+        postPatch = args.postPatch or "";
+        packages = args.packages or {};
+      };
     }
     else throw "nix-pins: pin '${pinName}' uses unsupported fetcher '${declaration._type or "unknown"}'";
-
   evaluatePin = pinName: declaration: let
     normalized = normalizePin pinName declaration;
     check = evaluateChecker pinName normalized.checker;
-    validationFetcher = (fetchers.evaluate pinName {version = "nix-pins-validation";} normalized.fetcher).fetcher;
-    valid = builtins.deepSeq normalized.packages (builtins.deepSeq validationFetcher true);
-    locked = pins.${pinName} or {};
-    fetched = fetchers.evaluate pinName locked normalized.fetcher;
-    src =
-      if normalized.patches == [] && normalized.postPatch == ""
-      then fetched.src
-      else
-        pkgs.applyPatches {
-          name = "${pinName}-patched";
-          src = fetched.src;
-          inherit (normalized) patches postPatch;
-        };
-    packageNames = builtins.attrNames normalized.packages;
-    baseHashName = packageName:
-      builders.hashName pinName packageName normalized.packages.${packageName};
-    hashName = packageName: let
-      base = baseHashName packageName;
-      sameType = builtins.filter (name: baseHashName name == base) packageNames;
-    in
-      if builtins.length sameType == 1
-      then base
-      else "${packageName}.${base}";
+    validationFetchers =
+      builtins.mapAttrs
+      (sourceName: source:
+        (fetchers.evaluate "${pinName}' source '${sourceName}" {version = "nix-pins-validation";} source.fetcher).fetcher)
+      normalized.sources;
+    valid = builtins.deepSeq normalized.sources (builtins.deepSeq validationFetchers true);
+    lockedPin = pins.${pinName} or {};
+    evaluateSource = sourceName: normalizedSource: let
+      sourcePinName = "${pinName}' source '${sourceName}";
+      packagePrefix =
+        if sourceName == "default"
+        then pinName
+        else "${pinName}-${sourceName}";
+      lockedSource = (lockedPin.sources or {}).${sourceName} or {};
+      locked = lockedSource // {version = lockedPin.version or (throw "nix-pins: pin '${pinName}' missing locked version");};
+      fetched = fetchers.evaluate sourcePinName locked normalizedSource.fetcher;
+      src =
+        if normalizedSource.patches == [] && normalizedSource.postPatch == ""
+        then fetched.src
+        else
+          pkgs.applyPatches {
+            name = "${packagePrefix}-patched";
+            src = fetched.src;
+            inherit (normalizedSource) patches postPatch;
+          };
+      packageNames = builtins.attrNames normalizedSource.packages;
+      baseHashName = packageName:
+        builders.hashName sourcePinName packageName normalizedSource.packages.${packageName};
+      hashName = packageName: let
+        base = baseHashName packageName;
+        sameType = builtins.filter (name: baseHashName name == base) packageNames;
+      in
+        if builtins.length sameType == 1
+        then base
+        else "${packageName}.${base}";
       packages =
         builtins.mapAttrs
-        (packageName: builders.evaluate pinName packageName (hashName packageName) locked src)
-        normalized.packages;
+        (packageName: builders.evaluate packagePrefix packageName (hashName packageName) locked src)
+        normalizedSource.packages;
       packageDerived =
         builtins.mapAttrs
-        (packageName: _: builders.derived pinName packageName (hashName packageName) normalized.packages.${packageName} packages.${packageName})
-        normalized.packages;
+        (packageName: _: builders.derived sourcePinName packageName (hashName packageName) normalizedSource.packages.${packageName} packages.${packageName})
+        normalizedSource.packages;
       derived =
         builtins.foldl'
         (result: packageName: result // packageDerived.${packageName})
         {}
         packageNames;
+    in {
+      inherit (fetched) fetcher;
+      fetchSrc = fetched.src;
+      inherit src derived packageDerived packages;
+    };
   in {
     check = assert valid; check;
-    inherit (fetched) fetcher;
-    fetchSrc = fetched.src;
-    inherit src;
-      inherit derived packageDerived packages;
+    sources = builtins.mapAttrs evaluateSource normalized.sources;
   };
 in
   builtins.mapAttrs evaluatePin declarations

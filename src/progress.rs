@@ -11,6 +11,7 @@ pub enum PinStep {
     Checking,
     VersionSelected,
     HashingSource,
+    PatchingSource,
     SourceReady,
     SourceReused,
     DerivedReused(String),
@@ -24,6 +25,7 @@ impl PinStep {
             Self::Checking => "Checking".into(),
             Self::VersionSelected => "Version Selected".into(),
             Self::HashingSource => "Hashing source".into(),
+            Self::PatchingSource => "Applying patches".into(),
             Self::SourceReady => "Source Ready".into(),
             Self::SourceReused => "Source Reused".into(),
             Self::DerivedReused(key) => format!("Reused {key}"),
@@ -51,6 +53,55 @@ enum Event {
         detail: Option<String>,
     },
     PinPaused(String),
+    SourcesStarted {
+        name: String,
+        sources: Vec<String>,
+    },
+    SourceStep {
+        name: String,
+        source: String,
+        step: PinStep,
+    },
+    SourceDetail {
+        name: String,
+        source: String,
+        detail: Option<String>,
+    },
+    SourcePackagesStarted {
+        name: String,
+        source: String,
+        packages: Vec<String>,
+    },
+    SourcePackageActive {
+        name: String,
+        source: String,
+        package: String,
+        key: String,
+    },
+    SourcePackageDetail {
+        name: String,
+        source: String,
+        package: String,
+        detail: Option<String>,
+    },
+    SourcePackageReady {
+        name: String,
+        source: String,
+        package: String,
+        key: String,
+    },
+    SourcePackageReused {
+        name: String,
+        source: String,
+        package: String,
+        key: String,
+    },
+    SourcePackageFailed {
+        name: String,
+        source: String,
+        package: String,
+        key: String,
+    },
     PackagesStarted {
         name: String,
         packages: Vec<String>,
@@ -197,6 +248,82 @@ impl Reporter {
         self.send(Event::PinPaused(name.into()));
     }
 
+    pub fn sources(&self, name: &str, sources: Vec<String>) {
+        self.send(Event::SourcesStarted {
+            name: name.into(),
+            sources,
+        });
+    }
+
+    pub fn source_step(&self, name: &str, source: &str, step: PinStep) {
+        self.send(Event::SourceStep {
+            name: name.into(),
+            source: source.into(),
+            step,
+        });
+    }
+
+    pub fn source_detail(&self, name: &str, source: &str, detail: Option<String>) {
+        self.send(Event::SourceDetail {
+            name: name.into(),
+            source: source.into(),
+            detail,
+        });
+    }
+
+    pub fn source_packages(&self, name: &str, source: &str, packages: Vec<String>) {
+        self.send(Event::SourcePackagesStarted {
+            name: name.into(),
+            source: source.into(),
+            packages,
+        });
+    }
+
+    pub fn source_package_active(&self, name: &str, source: &str, package: &str, key: &str) {
+        self.send(Event::SourcePackageActive {
+            name: name.into(),
+            source: source.into(),
+            package: package.into(),
+            key: key.into(),
+        });
+    }
+
+    pub fn source_package_detail(&self, name: &str, source: &str, package: &str, detail: Option<String>) {
+        self.send(Event::SourcePackageDetail {
+            name: name.into(),
+            source: source.into(),
+            package: package.into(),
+            detail,
+        });
+    }
+
+    pub fn source_package_ready(&self, name: &str, source: &str, package: &str, key: &str) {
+        self.send(Event::SourcePackageReady {
+            name: name.into(),
+            source: source.into(),
+            package: package.into(),
+            key: key.into(),
+        });
+    }
+
+    pub fn source_package_reused(&self, name: &str, source: &str, package: &str, key: &str) {
+        self.send(Event::SourcePackageReused {
+            name: name.into(),
+            source: source.into(),
+            package: package.into(),
+            key: key.into(),
+        });
+    }
+
+    pub fn source_package_failed(&self, name: &str, source: &str, package: &str, key: &str) {
+        self.send(Event::SourcePackageFailed {
+            name: name.into(),
+            source: source.into(),
+            package: package.into(),
+            key: key.into(),
+        });
+    }
+
     pub fn packages(&self, name: &str, packages: Vec<String>) {
         self.send(Event::PackagesStarted {
             name: name.into(),
@@ -304,6 +431,13 @@ struct ActivePin {
     step: PinStep,
     detail: Option<String>,
     packages: BTreeMap<String, PackageState>,
+    sources: BTreeMap<String, ActiveSource>,
+}
+
+struct ActiveSource {
+    step: Option<PinStep>,
+    detail: Option<String>,
+    packages: BTreeMap<String, PackageState>,
 }
 
 enum PackageState {
@@ -371,6 +505,112 @@ impl Renderer {
                 if let Some(pin) = self.active.remove(&name) {
                     pin.bar.finish_and_clear();
                 }
+            }
+            Event::SourcesStarted { name, sources } => {
+                self.ensure_active(&name, PinStep::HashingSource);
+                if let Some(pin) = self.active.get_mut(&name) {
+                    pin.sources = sources
+                        .into_iter()
+                        .map(|source| {
+                            (
+                                source,
+                                ActiveSource {
+                                    step: None,
+                                    detail: None,
+                                    packages: BTreeMap::new(),
+                                },
+                            )
+                        })
+                        .collect();
+                }
+                self.refresh(&name);
+            }
+            Event::SourceStep { name, source, step } => {
+                self.ensure_active(&name, step.clone());
+                if let Some(source) = self.active.get_mut(&name).and_then(|pin| pin.sources.get_mut(&source)) {
+                    source.step = Some(step);
+                    source.detail = None;
+                }
+                self.refresh(&name);
+            }
+            Event::SourceDetail { name, source, detail } => {
+                if let Some(source) = self.active.get_mut(&name).and_then(|pin| pin.sources.get_mut(&source)) {
+                    source.detail = detail;
+                }
+                self.refresh(&name);
+            }
+            Event::SourcePackagesStarted { name, source, packages } => {
+                self.ensure_active(&name, PinStep::HashingPackages);
+                if let Some(source) = self.active.get_mut(&name).and_then(|pin| pin.sources.get_mut(&source)) {
+                    source.step = Some(PinStep::HashingPackages);
+                    source.packages = packages
+                        .into_iter()
+                        .map(|package| (package, PackageState::Waiting))
+                        .collect();
+                }
+                self.refresh(&name);
+            }
+            Event::SourcePackageActive {
+                name,
+                source,
+                package,
+                key,
+            } => {
+                if let Some(source) = self.active.get_mut(&name).and_then(|pin| pin.sources.get_mut(&source)) {
+                    source
+                        .packages
+                        .insert(package, PackageState::Active { key, detail: None });
+                }
+                self.refresh(&name);
+            }
+            Event::SourcePackageDetail {
+                name,
+                source,
+                package,
+                detail,
+            } => {
+                if let Some(PackageState::Active { detail: current, .. }) = self
+                    .active
+                    .get_mut(&name)
+                    .and_then(|pin| pin.sources.get_mut(&source))
+                    .and_then(|source| source.packages.get_mut(&package))
+                {
+                    *current = detail;
+                }
+                self.refresh(&name);
+            }
+            Event::SourcePackageReady {
+                name,
+                source,
+                package,
+                key,
+            } => {
+                if let Some(source) = self.active.get_mut(&name).and_then(|pin| pin.sources.get_mut(&source)) {
+                    source.packages.insert(package, PackageState::Ready(key));
+                }
+                self.refresh(&name);
+            }
+            Event::SourcePackageReused {
+                name,
+                source,
+                package,
+                key,
+            } => {
+                if let Some(source) = self.active.get_mut(&name).and_then(|pin| pin.sources.get_mut(&source)) {
+                    source.packages.insert(package, PackageState::Reused(key));
+                }
+                self.refresh(&name);
+            }
+            Event::SourcePackageFailed {
+                name,
+                source,
+                package,
+                key,
+            } => {
+                if let Some(source) = self.active.get_mut(&name).and_then(|pin| pin.sources.get_mut(&source)) {
+                    source.packages.insert(package, PackageState::Failed(key));
+                }
+                self.refresh(&name);
             }
             Event::PackagesStarted { name, packages } => {
                 self.ensure_active(&name, PinStep::HashingPackages);
@@ -463,6 +703,7 @@ impl Renderer {
                 step,
                 detail: None,
                 packages: BTreeMap::new(),
+                sources: BTreeMap::new(),
             },
         );
     }
@@ -524,33 +765,71 @@ fn spinner_style() -> ProgressStyle {
 }
 
 fn render_active(name: &str, versions: &PinVersions, pin: &ActivePin) -> String {
-    let detail = pin
-        .detail
-        .as_ref()
+    let folded = if pin.sources.len() == 1 {
+        pin.sources.get("default")
+    } else {
+        None
+    };
+    let step = folded.and_then(|source| source.step.as_ref()).unwrap_or(&pin.step);
+    let detail = folded
+        .and_then(|source| source.detail.as_ref())
+        .or(pin.detail.as_ref())
         .map(|detail| format!(" · {detail}"))
         .unwrap_or_default();
     let mut line = format!(
         "{name} {} {} {}{detail}",
         versions.current,
         versions.target,
-        pin.step.label()
+        step.label()
     );
-    let len = pin.packages.len();
-    for (index, (package, state)) in pin.packages.iter().enumerate() {
-        let branch = if index + 1 == len { "└─" } else { "├─" };
-        let status = match state {
-            PackageState::Waiting => "· waiting".into(),
-            PackageState::Active { key, detail } => format!(
-                "⠋ Hashing {key}{}",
-                detail.as_ref().map(|detail| format!(" · {detail}")).unwrap_or_default()
-            ),
-            PackageState::Ready(key) => format!("✓ {key} ready"),
-            PackageState::Reused(key) => format!("↺ {key} reused"),
-            PackageState::Failed(key) => format!("✗ Failed · {key}"),
-        };
-        line.push_str(&format!("\n  {branch} {package} {status}"));
+
+    if let Some(source) = folded {
+        append_packages(&mut line, "", &source.packages);
+    } else if pin.sources.is_empty() {
+        append_packages(&mut line, "", &pin.packages);
+    } else {
+        let len = pin.sources.len();
+        for (index, (source_name, source)) in pin.sources.iter().enumerate() {
+            let last = index + 1 == len;
+            let connector = if last { "└─" } else { "├─" };
+            let child_prefix = if last { "   " } else { "│  " };
+            let step = source
+                .step
+                .as_ref()
+                .map(PinStep::label)
+                .unwrap_or_else(|| "Waiting".into());
+            let detail = source
+                .detail
+                .as_ref()
+                .map(|detail| format!(" · {detail}"))
+                .unwrap_or_default();
+            line.push_str(&format!("\n{connector} {source_name} {step}{detail}"));
+            append_packages(&mut line, child_prefix, &source.packages);
+        }
     }
+
     line
+}
+
+fn append_packages(line: &mut String, prefix: &str, packages: &BTreeMap<String, PackageState>) {
+    let len = packages.len();
+    for (index, (package, state)) in packages.iter().enumerate() {
+        let connector = if index + 1 == len { "└─" } else { "├─" };
+        line.push_str(&format!("\n{prefix}{connector} {package} {}", package_label(state)));
+    }
+}
+
+fn package_label(state: &PackageState) -> String {
+    match state {
+        PackageState::Waiting => "waiting".into(),
+        PackageState::Active { key, detail } => detail
+            .as_ref()
+            .map(|detail| format!("⠋ Hashing {key} · {detail}"))
+            .unwrap_or_else(|| format!("⠋ Hashing {key}")),
+        PackageState::Ready(key) => format!("✓ {key} ready"),
+        PackageState::Reused(key) => format!("↺ {key} reused"),
+        PackageState::Failed(key) => format!("✗ {key} failed"),
+    }
 }
 
 fn render(receiver: mpsc::Receiver<Event>, target: Option<ProgressDrawTarget>) {
@@ -596,8 +875,42 @@ fn render_plain(receiver: mpsc::Receiver<Event>) {
                 });
                 eprintln!("· {name} {} {} {}", version.current, version.target, step.label());
             }
+            Event::PinDetail {
+                name,
+                detail: Some(detail),
+            } => eprintln!("· {name} {detail}"),
+            Event::SourceStep { name, source, step } => eprintln!("· {name} {source} {}", step.label()),
+            Event::SourceDetail {
+                name,
+                source,
+                detail: Some(detail),
+            } => eprintln!("· {name} {source} {detail}"),
             Event::PackageActive { name, package, key } => eprintln!("· {name} {package} Hashing {key}"),
             Event::PackageReused { name, package, key } => eprintln!("· {name} {package} Reused {key}"),
+            Event::SourcePackageActive {
+                name,
+                source,
+                package,
+                key,
+            } => eprintln!("· {name} {source} {package} Hashing {key}"),
+            Event::SourcePackageReused {
+                name,
+                source,
+                package,
+                key,
+            } => eprintln!("· {name} {source} {package} Reused {key}"),
+            Event::SourcePackageReady {
+                name,
+                source,
+                package,
+                key,
+            } => eprintln!("· {name} {source} {package} Ready {key}"),
+            Event::SourcePackageFailed {
+                name,
+                source,
+                package,
+                key,
+            } => eprintln!("· {name} {source} {package} Failed {key}"),
             Event::PinDone { name, packages } => {
                 let version = versions.get(&name).cloned().unwrap_or(PinVersions {
                     current: "—".into(),
@@ -617,19 +930,23 @@ fn render_plain(receiver: mpsc::Receiver<Event>) {
                 eprintln!("· {label}");
                 operation = Some(label);
             }
+            Event::OperationFinished(status) => {
+                if let (Some(label), Some(success)) = (operation.take(), status) {
+                    let symbol = if success { "✓" } else { "✗" };
+                    eprintln!("{symbol} {label}");
+                }
+            }
+            Event::Message(message) => eprintln!("{message}"),
             Event::Finished(done) => {
                 let _ = done.send(());
                 break;
             }
-            Event::OperationFinished(Some(success)) => {
-                if let Some(label) = operation.take() {
-                    eprintln!("{} {label}", if success { "✓" } else { "✗" });
-                }
-            }
-            Event::OperationFinished(None) => operation = None,
-            Event::Message(message) => eprintln!("{message}"),
-            Event::PinDetail { .. }
+            Event::PinDetail { detail: None, .. }
             | Event::PinPaused(_)
+            | Event::SourcesStarted { .. }
+            | Event::SourceDetail { detail: None, .. }
+            | Event::SourcePackagesStarted { .. }
+            | Event::SourcePackageDetail { .. }
             | Event::PackagesStarted { .. }
             | Event::PackageDetail { .. }
             | Event::PackageReady { .. }
@@ -790,5 +1107,63 @@ mod tests {
         let done = term.contents();
         assert!(done.contains("✓ demo v1 v2 Done · 2 packages"), "{done}");
         assert!(!done.contains("npmDepsHash"), "{done}");
+    }
+
+    #[test]
+    fn renderer_shows_pin_source_and_package_tree() {
+        let term = InMemoryTerm::new(12, 120);
+        let mut renderer = Renderer::new(ProgressDrawTarget::term_like(Box::new(term.clone())));
+        renderer.apply(Event::PinDeclared {
+            name: "release".into(),
+            current: "v1".into(),
+        });
+        renderer.apply(Event::TargetSelected {
+            name: "release".into(),
+            target: "v2".into(),
+        });
+        renderer.apply(Event::SourcesStarted {
+            name: "release".into(),
+            sources: vec!["archive".into(), "repository".into()],
+        });
+        renderer.apply(Event::SourceStep {
+            name: "release".into(),
+            source: "archive".into(),
+            step: PinStep::SourceReady,
+        });
+        renderer.apply(Event::SourcePackagesStarted {
+            name: "release".into(),
+            source: "repository".into(),
+            packages: vec!["api".into(), "cli".into()],
+        });
+        renderer.apply(Event::SourcePackageReused {
+            name: "release".into(),
+            source: "repository".into(),
+            package: "api".into(),
+            key: "vendorHash".into(),
+        });
+        renderer.apply(Event::SourcePackageActive {
+            name: "release".into(),
+            source: "repository".into(),
+            package: "cli".into(),
+            key: "vendorHash".into(),
+        });
+
+        let active = term.contents();
+        assert!(active.contains("release v1 v2 Hashing packages"), "{active}");
+        assert!(active.contains("├─ archive Source Ready"), "{active}");
+        assert!(active.contains("└─ repository Hashing packages"), "{active}");
+        assert!(active.contains("   ├─ api ↺ vendorHash reused"), "{active}");
+        assert!(active.contains("   └─ cli ⠋ Hashing vendorHash"), "{active}");
+
+        renderer.apply(Event::PinFailed {
+            name: "release".into(),
+            location: "Source repository/Package cli/Derived Hash vendorHash".into(),
+        });
+        let failed = term.contents();
+        assert!(
+            failed.contains("✗ release v1 v2 Failed · Source repository/Package cli/Derived Hash vendorHash"),
+            "{failed}"
+        );
+        assert!(!failed.contains("Hashing vendorHash"), "{failed}");
     }
 }

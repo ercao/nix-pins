@@ -7,7 +7,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct PinsFile {
@@ -30,6 +30,11 @@ pub struct Transaction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pin {
     pub version: String,
+    pub sources: BTreeMap<String, Source>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Source {
     pub fetcher: Fetcher,
     pub hash: String,
     /// 未使用的能力整个键缺失，而非为 null（ADR-0006）。
@@ -49,6 +54,18 @@ pub enum Fetcher {
     Huggingface(BTreeMap<String, serde_json::Value>),
     Url(BTreeMap<String, serde_json::Value>),
     Zip(BTreeMap<String, serde_json::Value>),
+}
+
+impl Fetcher {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Github(_) => "GitHub Fetcher",
+            Self::Git(_) => "git Fetcher",
+            Self::Huggingface(_) => "Hugging Face Fetcher",
+            Self::Url(_) => "URL Fetcher",
+            Self::Zip(_) => "zip Fetcher",
+        }
+    }
 }
 
 impl PinsFile {
@@ -174,10 +191,15 @@ mod tests {
             "curlie".into(),
             Pin {
                 version: "v1.8.2".into(),
-                fetcher: Fetcher::Github(gh),
-                hash: "sha256-BlpIDik4hkU4c+KCyAmgUURIN362RDQID/qo6Ojp2Ek=".into(),
-                derived: BTreeMap::new(),
-                fingerprints: BTreeMap::new(),
+                sources: BTreeMap::from([(
+                    "default".into(),
+                    Source {
+                        fetcher: Fetcher::Github(gh),
+                        hash: "sha256-BlpIDik4hkU4c+KCyAmgUURIN362RDQID/qo6Ojp2Ek=".into(),
+                        derived: BTreeMap::new(),
+                        fingerprints: BTreeMap::new(),
+                    },
+                )]),
             },
         );
         PinsFile {
@@ -200,7 +222,10 @@ mod tests {
         let s = serde_json::to_string(&sample()).unwrap();
         let back: PinsFile = serde_json::from_str(&s).unwrap();
         assert_eq!(back.pins["curlie"].version, "v1.8.2");
-        assert!(matches!(back.pins["curlie"].fetcher, Fetcher::Github(_)));
+        assert!(matches!(
+            back.pins["curlie"].sources["default"].fetcher,
+            Fetcher::Github(_)
+        ));
     }
 
     #[test]
