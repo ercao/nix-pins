@@ -124,7 +124,7 @@ fn update(
     let loading = progress.operation("Loading configuration");
     let checks = match probe::probe_checks(&config.display().to_string()).map_err(nix_error) {
         Ok(checks) => {
-            loading.finish();
+            loading.succeed();
             checks
         }
         Err(error) => {
@@ -170,7 +170,7 @@ fn update(
         let empty_hashes = BTreeMap::<String, BTreeMap<String, String>>::new();
         let (mut source_probes, source_probe_failures) =
             probe_pins(&config, &versions, &empty_hashes, env_jobs("NIX_PINS_HASH_JOBS", 1));
-        resolving.finish();
+        resolving.succeed();
         for (pin, error) in source_probe_failures {
             reporter.failed(&pin, "Resolving sources");
             failures.insert(pin, error);
@@ -261,7 +261,7 @@ fn update(
                     &source_hashes,
                     env_jobs("NIX_PINS_HASH_JOBS", 1),
                 );
-                resolving.finish();
+                resolving.succeed();
                 for (pin, error) in derived_probe_failures {
                     reporter.failed(&pin, "Resolving derived hashes");
                     failures.insert(pin, error);
@@ -427,19 +427,19 @@ fn resolve_source(task: SourceTask, reporter: &progress::Reporter) -> Result<Sou
     {
         if task.expanded {
             reporter.source_step(&task.pin, &task.source, progress::PinStep::SourceReused);
-            reporter.source_detail(&task.pin, &task.source, Some(fetcher.clone()));
+            reporter.source_detail(&task.pin, &task.source, Some(fetcher.clone().into()));
         } else {
             reporter.step(&task.pin, progress::PinStep::SourceReused);
-            reporter.detail(&task.pin, Some(fetcher.clone()));
+            reporter.detail(&task.pin, Some(fetcher.clone().into()));
         }
         source.hash.clone()
     } else {
         if task.expanded {
             reporter.source_step(&task.pin, &task.source, progress::PinStep::HashingSource);
-            reporter.source_detail(&task.pin, &task.source, Some(fetcher.clone()));
+            reporter.source_detail(&task.pin, &task.source, Some(fetcher.clone().into()));
         } else {
             reporter.step(&task.pin, progress::PinStep::HashingSource);
-            reporter.detail(&task.pin, Some(fetcher.clone()));
+            reporter.detail(&task.pin, Some(fetcher.clone().into()));
         }
         let pin = task.pin.clone();
         let source = task.source.clone();
@@ -447,10 +447,10 @@ fn resolve_source(task: SourceTask, reporter: &progress::Reporter) -> Result<Sou
         let fetcher_detail = fetcher.clone();
         let details = reporter.clone();
         let hash = nix::resolve_hash(&probe.src, move |detail| {
-            let detail = Some(match detail {
-                Some(detail) => format!("{fetcher_detail} · {detail}"),
-                None => fetcher_detail.clone(),
-            });
+            let detail = Some(detail.map_or_else(
+                || fetcher_detail.clone().into(),
+                |detail| detail.with_prefix(&fetcher_detail),
+            ));
             if expanded {
                 details.source_detail(&pin, &source, detail);
             } else {
@@ -460,10 +460,10 @@ fn resolve_source(task: SourceTask, reporter: &progress::Reporter) -> Result<Sou
         .map_err(nix_error)?;
         if task.expanded {
             reporter.source_step(&task.pin, &task.source, progress::PinStep::SourceReady);
-            reporter.source_detail(&task.pin, &task.source, Some(fetcher.clone()));
+            reporter.source_detail(&task.pin, &task.source, Some(fetcher.clone().into()));
         } else {
             reporter.step(&task.pin, progress::PinStep::SourceReady);
-            reporter.detail(&task.pin, Some(fetcher.clone()));
+            reporter.detail(&task.pin, Some(fetcher.clone().into()));
         }
         hash
     };
@@ -487,7 +487,16 @@ fn run_derived(
             .into_iter()
             .map(|task| ((task.pin.clone(), task.source.clone()), task)),
         jobs,
-        move |_, task| resolve_derived(task, &reporter),
+        move |_, task| {
+            let pin = task.pin.clone();
+            let source = task.source.clone();
+            let expanded = task.source_result.expanded;
+            let result = resolve_derived(task, &reporter);
+            if expanded {
+                reporter.source_done(&pin, &source);
+            }
+            result
+        },
     )
 }
 
@@ -513,10 +522,7 @@ fn resolve_derived(task: DerivedTask, reporter: &progress::Reporter) -> Result<p
         let fetcher = task.source_result.fetcher.label().to_owned();
         let details = reporter.clone();
         if let Err(error) = nix::realize(patched, move |detail| {
-            let detail = Some(match detail {
-                Some(detail) => format!("{fetcher} · {detail}"),
-                None => fetcher.clone(),
-            });
+            let detail = Some(detail.map_or_else(|| fetcher.clone().into(), |detail| detail.with_prefix(&fetcher)));
             if expanded {
                 details.source_detail(&pin, &source, detail);
             } else {

@@ -93,8 +93,7 @@ esac
     let output = run(&dir.0, &["update"]);
 
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Applying patches"));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("GitHub Fetcher"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Writing pins.json done"));
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert_eq!(pins["schemaVersion"], 2);
     assert_eq!(pins["pins"]["demo"]["version"], "v1.2.3");
@@ -245,8 +244,7 @@ esac
 
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("release archive Hashing source"), "{stderr}");
-    assert!(stderr.contains("release repository Hashing source"), "{stderr}");
+    assert!(stderr.contains("release — → v1.2.3"), "{stderr}");
     assert_eq!(fs::read_to_string(dir.0.join("checker-count")).unwrap(), "1");
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert_eq!(pins["schemaVersion"], 2);
@@ -880,8 +878,7 @@ esac
     let second = run(&dir.0, &["update"]);
     let stderr = String::from_utf8_lossy(&second.stderr);
     assert!(second.status.success(), "{stderr}");
-    assert!(stderr.contains("Reused vendorHash"), "{stderr}");
-    assert!(stderr.contains("Reused npmDepsHash"), "{stderr}");
+    assert!(stderr.contains("demo unchanged at v1"), "{stderr}");
 }
 
 #[test]
@@ -1602,8 +1599,8 @@ exit 1
     let output = run(&dir.0, &["update"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr.contains("✗ Loading configuration"), "{stderr}");
-    assert!(!stderr.contains("✗ demo"), "{stderr}");
+    assert!(stderr.contains("Loading configuration failed"), "{stderr}");
+    assert!(!stderr.contains("demo failed"), "{stderr}");
     assert_eq!(fs::read(dir.0.join("pins.json")).unwrap(), original);
 }
 
@@ -1681,9 +1678,8 @@ esac
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(output.status.success(), "{stderr}");
-    assert!(stderr.contains("demo — v1 Hashing source"), "{stderr}");
-    assert!(stderr.contains("✓ demo — v1 Done"), "{stderr}");
-    assert!(stderr.contains("✓ Writing pins.json"), "{stderr}");
+    assert!(stderr.contains("demo — → v1"), "{stderr}");
+    assert!(stderr.contains("Writing pins.json done"), "{stderr}");
     assert!(!stderr.contains("secret.invalid"), "{stderr}");
     assert!(!stderr.contains("@nix"), "{stderr}");
     assert!(!stderr.contains("\u{1b}"), "{stderr}");

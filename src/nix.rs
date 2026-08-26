@@ -13,6 +13,45 @@ pub enum Error {
     Nix(String),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NixProgress {
+    Text(String),
+    Counter {
+        current: u64,
+        total: Option<u64>,
+        unit: NixProgressUnit,
+        label: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NixProgressUnit {
+    Bytes,
+    Objects,
+}
+
+impl NixProgress {
+    pub fn with_prefix(mut self, prefix: &str) -> Self {
+        match &mut self {
+            Self::Text(text) => *text = format!("{prefix} · {text}"),
+            Self::Counter { label, .. } => *label = format!("{prefix} · {label}"),
+        }
+        self
+    }
+}
+
+impl From<String> for NixProgress {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
+impl From<&str> for NixProgress {
+    fn from(value: &str) -> Self {
+        Self::Text(value.into())
+    }
+}
+
 /// 求值一个 Nix 表达式并以 JSON 返回。
 pub fn eval_json(expr: &str) -> Result<serde_json::Value, Error> {
     let out = Command::new("nix")
@@ -34,7 +73,7 @@ enum Activity {
     },
     Build {
         phase: Option<(u64, String)>,
-        download: Option<String>,
+        download: Option<(u64, NixProgress)>,
     },
     Query,
 }
@@ -113,7 +152,8 @@ impl NixLog {
                             return Some(line.into());
                         };
                         if let Some(Activity::Build { download, .. }) = activity {
-                            *download = builder_progress(value);
+                            self.phase_sequence += 1;
+                            *download = builder_progress(value).map(|progress| (self.phase_sequence, progress));
                         }
                         return Some(value.into());
                     }
@@ -126,7 +166,7 @@ impl NixLog {
         None
     }
 
-    fn detail(&self) -> Option<String> {
+    fn detail(&self) -> Option<NixProgress> {
         let downloads: Vec<_> = self
             .activities
             .values()
@@ -138,41 +178,69 @@ impl NixLog {
         if !downloads.is_empty() {
             let done = downloads.iter().map(|(done, _)| done).sum::<u64>();
             let transfers = downloads.len();
-            if downloads.iter().all(|(_, total)| total.is_some()) {
-                let total = downloads.iter().filter_map(|(_, total)| *total).sum::<u64>();
-                if done >= total {
-                    return Some(format!(
-                        "Downloaded {} · {transfers} {}",
-                        format_bytes(done),
-                        if transfers == 1 { "transfer" } else { "transfers" }
-                    ));
-                }
-                let percent = done.saturating_mul(100).checked_div(total).unwrap_or(0).min(100);
-                return Some(format!(
-                    "Downloading {}/{} MiB ({percent}%) · {transfers} {}",
-                    format_mib(done),
-                    format_mib(total),
+            let total = downloads
+                .iter()
+                .all(|(_, total)| total.is_some())
+                .then(|| downloads.iter().filter_map(|(_, total)| *total).sum());
+            return Some(NixProgress::Counter {
+                current: done,
+                total,
+                unit: NixProgressUnit::Bytes,
+                label: format!(
+                    "Downloading · {transfers} {}",
                     if transfers == 1 { "transfer" } else { "transfers" }
-                ));
-            }
-            return Some(format!(
-                "Downloading {} · {transfers} {}",
-                format_bytes(done),
-                if transfers == 1 { "transfer" } else { "transfers" }
-            ));
+                ),
+            });
         }
         if self
             .activities
             .values()
             .any(|activity| matches!(activity, Activity::Copy))
         {
-            return Some("Copying Store Path".into());
+            return Some(NixProgress::Text("Copying Store Path".into()));
         }
-        if let Some(download) = self.activities.values().find_map(|activity| match activity {
-            Activity::Build { download, .. } => download.as_ref(),
-            _ => None,
-        }) {
-            return Some(download.clone());
+        let builder_downloads: Vec<_> = self
+            .activities
+            .values()
+            .filter_map(|activity| match activity {
+                Activity::Build { download, .. } => download.as_ref(),
+                _ => None,
+            })
+            .collect();
+        if let Some((_, latest)) = builder_downloads.iter().max_by_key(|(sequence, _)| *sequence).copied() {
+            if let NixProgress::Counter { unit, label, .. } = latest {
+                let counters: Vec<_> = builder_downloads
+                    .iter()
+                    .filter_map(|(_, progress)| match progress {
+                        NixProgress::Counter {
+                            current,
+                            total,
+                            unit: candidate_unit,
+                            label: candidate_label,
+                        } if candidate_unit == unit && candidate_label == label => Some((*current, *total)),
+                        _ => None,
+                    })
+                    .collect();
+                let current = counters
+                    .iter()
+                    .fold(0_u64, |sum, (current, _)| sum.saturating_add(*current));
+                let total = counters.iter().all(|(_, total)| total.is_some()).then(|| {
+                    counters
+                        .iter()
+                        .fold(0_u64, |sum, (_, total)| sum.saturating_add(total.unwrap_or_default()))
+                });
+                return Some(NixProgress::Counter {
+                    current,
+                    total,
+                    unit: *unit,
+                    label: if counters.len() == 1 {
+                        label.clone()
+                    } else {
+                        format!("{label} · {} transfers", counters.len())
+                    },
+                });
+            }
+            return Some(latest.clone());
         }
         if let Some((_, phase)) = self
             .activities
@@ -183,27 +251,27 @@ impl NixLog {
             })
             .max_by_key(|(sequence, _)| *sequence)
         {
-            return Some(phase.clone());
+            return Some(NixProgress::Text(phase.clone()));
         }
         if self
             .activities
             .values()
             .any(|activity| matches!(activity, Activity::Build { .. }))
         {
-            return Some("Building".into());
+            return Some(NixProgress::Text("Building".into()));
         }
         self.activities
             .values()
             .any(|activity| matches!(activity, Activity::Query))
-            .then(|| "Querying Cache".into())
+            .then(|| NixProgress::Text("Querying Cache".into()))
     }
 }
 
-fn builder_progress(line: &str) -> Option<String> {
+fn builder_progress(line: &str) -> Option<NixProgress> {
     curl_progress(line).or_else(|| git_progress(line))
 }
 
-fn curl_progress(line: &str) -> Option<String> {
+fn curl_progress(line: &str) -> Option<NixProgress> {
     let fields: Vec<_> = line.split_whitespace().collect();
     if fields.len() < 9 {
         return None;
@@ -222,14 +290,15 @@ fn curl_progress(line: &str) -> Option<String> {
     {
         return None;
     }
-    if fields[1] == "0" {
-        Some(format!("Downloading {} downloaded", fields[3]))
-    } else {
-        Some(format!("Downloading {}/{} ({percent}%)", fields[3], fields[1]))
-    }
+    Some(NixProgress::Counter {
+        current: parse_size(fields[3])?,
+        total: (fields[1] != "0").then(|| parse_size(fields[1])).flatten(),
+        unit: NixProgressUnit::Bytes,
+        label: "Downloading".into(),
+    })
 }
 
-fn git_progress(line: &str) -> Option<String> {
+fn git_progress(line: &str) -> Option<NixProgress> {
     if !line.contains('|') && !line.contains("Receiving objects:") && !line.contains("Downloading LFS objects:") {
         return None;
     }
@@ -249,21 +318,33 @@ fn git_progress(line: &str) -> Option<String> {
     {
         return None;
     }
-    Some(format!("Git {done}/{total} ({percent}%)"))
+    Some(NixProgress::Counter {
+        current: done.parse().ok()?,
+        total: Some(total.parse().ok()?),
+        unit: NixProgressUnit::Objects,
+        label: if line.contains("Downloading LFS objects:") {
+            "LFS objects"
+        } else {
+            "Git objects"
+        }
+        .into(),
+    })
 }
 
-fn format_bytes(bytes: u64) -> String {
-    format!("{} MiB", format_mib(bytes))
-}
-
-fn format_mib(bytes: u64) -> String {
-    const MIB: f64 = 1024.0 * 1024.0;
-    format!("{:.1}", bytes as f64 / MIB)
+fn parse_size(value: &str) -> Option<u64> {
+    let (number, multiplier) = match value.chars().last()? {
+        'k' => (&value[..value.len() - 1], 1024_f64),
+        'M' => (&value[..value.len() - 1], 1024_f64.powi(2)),
+        'G' => (&value[..value.len() - 1], 1024_f64.powi(3)),
+        'T' => (&value[..value.len() - 1], 1024_f64.powi(4)),
+        _ => (value, 1.0),
+    };
+    Some((number.parse::<f64>().ok()? * multiplier).round() as u64)
 }
 
 fn build(
     drv_path: &str,
-    mut progress: impl FnMut(Option<String>),
+    mut progress: impl FnMut(Option<NixProgress>),
 ) -> Result<(std::process::ExitStatus, String), Error> {
     use std::io::{BufRead, BufReader, Read};
     use std::process::Stdio;
@@ -340,13 +421,13 @@ fn build(
     Ok((status, diagnostics))
 }
 
-pub fn resolve_hash(drv_path: &str, progress: impl FnMut(Option<String>)) -> Result<String, Error> {
+pub fn resolve_hash(drv_path: &str, progress: impl FnMut(Option<NixProgress>)) -> Result<String, Error> {
     let (_, diagnostics) = build(drv_path, progress)?;
     // 退出码不可作为判据：404 的 fetchurl 曾以 0 退出且无 got 行（ADR-0003）。
     parse_got(&diagnostics).ok_or(Error::NoGotLine(diagnostics))
 }
 
-pub fn realize(drv_path: &str, progress: impl FnMut(Option<String>)) -> Result<(), Error> {
+pub fn realize(drv_path: &str, progress: impl FnMut(Option<NixProgress>)) -> Result<(), Error> {
     let (status, diagnostics) = build(drv_path, progress)?;
     if status.success() {
         Ok(())
@@ -370,7 +451,7 @@ fn parse_got(log: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_got, NixLog};
+    use super::{parse_got, NixLog, NixProgress, NixProgressUnit};
 
     /// 实测样本，取自本机 Nix 2.35.2（ADR-0003）。
     const MISMATCH: &str = concat!(
@@ -435,9 +516,15 @@ mod tests {
         log.push(r#"@nix {"action":"result","id":1,"type":105,"fields":[1048576,2097152,0,0]}"#);
         log.push(r#"@nix {"action":"result","id":2,"type":105,"fields":[524288,1048576,0,0]}"#);
 
-        let detail = log.detail().unwrap();
-        assert_eq!(detail, "Downloading 1.5/3.0 MiB (50%) · 2 transfers");
-        assert!(!detail.contains("secret.invalid"));
+        assert_eq!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 1_572_864,
+                total: Some(3_145_728),
+                unit: NixProgressUnit::Bytes,
+                label: "Downloading · 2 transfers".into(),
+            })
+        );
     }
 
     #[test]
@@ -446,7 +533,15 @@ mod tests {
         log.push(r#"@nix {"action":"start","id":1,"type":101,"fields":["hidden"]}"#);
         log.push(r#"@nix {"action":"result","id":1,"type":105,"fields":[1048576,0,0,0]}"#);
 
-        assert_eq!(log.detail().as_deref(), Some("Downloading 1.0 MiB · 1 transfer"));
+        assert_eq!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 1_048_576,
+                total: None,
+                unit: NixProgressUnit::Bytes,
+                label: "Downloading · 1 transfer".into(),
+            })
+        );
     }
 
     #[test]
@@ -454,7 +549,15 @@ mod tests {
         let mut log = NixLog::default();
         log.push(r#"@nix {"action":"start","id":1,"type":101,"fields":["hidden"]}"#);
         log.push(r#"@nix {"action":"result","id":1,"type":105,"fields":[1048576,1048576,0,0]}"#);
-        assert_eq!(log.detail().as_deref(), Some("Downloaded 1.0 MiB · 1 transfer"));
+        assert_eq!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 1_048_576,
+                total: Some(1_048_576),
+                unit: NixProgressUnit::Bytes,
+                label: "Downloading · 1 transfer".into(),
+            })
+        );
     }
 
     #[test]
@@ -463,13 +566,29 @@ mod tests {
         log.push(r#"@nix {"action":"start","id":1,"type":105,"fields":["hidden.drv"]}"#);
 
         log.push(r#"@nix {"action":"result","id":1,"type":101,"fields":[" 0 0 0 0 0 0 0 0 0"]}"#);
-        assert_eq!(log.detail().as_deref(), Some("Downloading 0 downloaded"));
+        assert_eq!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 0,
+                total: None,
+                unit: NixProgressUnit::Bytes,
+                label: "Downloading".into(),
+            })
+        );
         log.push(
             r#"@nix {"action":"result","id":1,"type":101,"fields":[" 42 10.0M 0 4.2M 0 0 1.0M 0 00:10 00:04 00:06"]}"#,
         );
-        assert_eq!(log.detail().as_deref(), Some("Downloading 4.2M/10.0M (42%)"));
+        assert_eq!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 4_404_019,
+                total: Some(10_485_760),
+                unit: NixProgressUnit::Bytes,
+                label: "Downloading".into(),
+            })
+        );
         log.push(r#"@nix {"action":"result","id":1,"type":101,"fields":["unpacking source archive"]}"#);
-        assert_eq!(log.detail().as_deref(), Some("Building"));
+        assert_eq!(log.detail(), Some(NixProgress::Text("Building".into())));
     }
 
     #[test]
@@ -480,11 +599,64 @@ mod tests {
         log.push(
             r#"@nix {"action":"result","id":1,"type":101,"fields":["展开对象中: 42% (13/31), 4.2 MiB | 1.0 MiB/s"]}"#,
         );
-        assert_eq!(log.detail().as_deref(), Some("Git 13/31 (42%)"));
+        assert_eq!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 13,
+                total: Some(31),
+                unit: NixProgressUnit::Objects,
+                label: "Git objects".into(),
+            })
+        );
         log.push(
             r#"@nix {"action":"result","id":1,"type":101,"fields":["Downloading LFS objects: 75% (3/4), 12 MB | 2 MB/s"]}"#,
         );
-        assert_eq!(log.detail().as_deref(), Some("Git 3/4 (75%)"));
+        assert_eq!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 3,
+                total: Some(4),
+                unit: NixProgressUnit::Objects,
+                label: "LFS objects".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn internal_json_aggregates_parallel_builder_transfers() {
+        let mut log = NixLog::default();
+        for id in [1, 2] {
+            log.push(&format!(
+                r#"@nix {{"action":"start","id":{id},"type":105,"fields":["hidden.drv"]}}"#
+            ));
+        }
+        log.push(
+            r#"@nix {"action":"result","id":1,"type":101,"fields":[" 25 8.0M 0 2.0M 0 0 1.0M 0 00:08 00:02 00:06"]}"#,
+        );
+        log.push(
+            r#"@nix {"action":"result","id":2,"type":101,"fields":[" 50 4.0M 0 2.0M 0 0 1.0M 0 00:04 00:02 00:02"]}"#,
+        );
+
+        assert_eq!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 4_194_304,
+                total: Some(12_582_912),
+                unit: NixProgressUnit::Bytes,
+                label: "Downloading · 2 transfers".into(),
+            })
+        );
+
+        log.push(r#"@nix {"action":"result","id":2,"type":101,"fields":[" 0 0 0 3.0M 0 0 1.0M 0 00:04 00:03 00:01"]}"#);
+        assert_eq!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 5_242_880,
+                total: None,
+                unit: NixProgressUnit::Bytes,
+                label: "Downloading · 2 transfers".into(),
+            })
+        );
     }
 
     #[test]
@@ -492,20 +664,26 @@ mod tests {
         let mut log = NixLog::default();
 
         log.push(r#"@nix {"action":"start","id":1,"type":108,"fields":["cache"]}"#);
-        assert_eq!(log.detail().as_deref(), Some("Querying Cache"));
+        assert_eq!(log.detail(), Some(NixProgress::Text("Querying Cache".into())));
         log.push(r#"@nix {"action":"start","id":2,"type":105,"fields":["/nix/store/demo.drv"]}"#);
-        assert_eq!(log.detail().as_deref(), Some("Building"));
+        assert_eq!(log.detail(), Some(NixProgress::Text("Building".into())));
         log.push(r#"@nix {"action":"result","id":2,"type":104,"fields":["buildPhase"]}"#);
-        assert_eq!(log.detail().as_deref(), Some("buildPhase"));
+        assert_eq!(log.detail(), Some(NixProgress::Text("buildPhase".into())));
         log.push(r#"@nix {"action":"start","id":5,"type":105,"fields":["/nix/store/newer.drv"]}"#);
         log.push(r#"@nix {"action":"result","id":5,"type":104,"fields":["installPhase"]}"#);
-        assert_eq!(log.detail().as_deref(), Some("installPhase"));
+        assert_eq!(log.detail(), Some(NixProgress::Text("installPhase".into())));
         log.push(r#"@nix {"action":"stop","id":5}"#);
-        assert_eq!(log.detail().as_deref(), Some("buildPhase"));
+        assert_eq!(log.detail(), Some(NixProgress::Text("buildPhase".into())));
         log.push(r#"@nix {"action":"start","id":3,"type":100,"fields":["from","to"]}"#);
-        assert_eq!(log.detail().as_deref(), Some("Copying Store Path"));
+        assert_eq!(log.detail(), Some(NixProgress::Text("Copying Store Path".into())));
         log.push(r#"@nix {"action":"start","id":4,"type":101,"fields":["https://secret.invalid"]}"#);
-        assert!(log.detail().unwrap().starts_with("Downloading"));
+        assert!(matches!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                unit: NixProgressUnit::Bytes,
+                ..
+            })
+        ));
 
         assert_eq!(
             log.push(r#"@nix {"action":"msg","level":0,"msg":"got: sha256-real"}"#),
