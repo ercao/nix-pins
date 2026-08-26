@@ -21,11 +21,11 @@ _Avoid_：pin, source, output
 _Avoid_：source progress, download task, stage row
 
 **Source Progress**：
-Pin Progress 下表示具名 Source 的子节点，承载 Fetcher、Source Hash、补丁与该 Source 的 Nix 详情。唯一名为 `default` 的 Source 可以折叠到 Pin 行；Source 树只在 Pin 活跃时存在。
+Pin Progress 下表示具名 Source 的子节点，承载 Fetcher、Source Hash、补丁与该 Source 的 Nix 详情。唯一名为 `default` 的 Source 可以折叠到 Pin 行；多 Source Pin 完成后保留各 Source 的最终状态。
 _Avoid_：pin progress, package progress, fetcher task
 
 **Package Progress**：
-Source Progress 在 Derived Hash 工作期间显示的 Package 子节点。唯一名为 `default` 的 Package 可以折叠到所属 Source 行；Package Progress 使用声明中的 Package 名，并只承载该 Package 的 Derived Hash 步骤与 Nix 详情。Checker、Version 与提交状态属于 Pin，Fetcher、Source Hash 与补丁属于 Source。
+Source Progress 在 Derived Hash 工作期间显示的 Package 子节点。唯一名为 `default` 的 Package 可以折叠到所属 Source 行；成功 Package 完成后折叠，失败 Package 在最终 Pin Progress 中保留对应分支。Package Progress 使用声明中的 Package 名，并只承载该 Package 的 Derived Hash 步骤与 Nix 详情。Checker、Version 与提交状态属于 Pin，Fetcher、Source Hash 与补丁属于 Source。
 _Avoid_：pin progress, package build result, inferred hash prefix
 
 **Pin Step**：

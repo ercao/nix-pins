@@ -150,7 +150,8 @@ esac
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert!(pins["pins"].get("demo").is_none());
     assert!(pins["failures"]["demo"].as_str().unwrap().contains("Applying patches"));
-    assert!(stderr.contains("Failed · Source default/Applying patches"), "{stderr}");
+    assert!(stderr.contains("⚠ demo"), "{stderr}");
+    assert!(stderr.contains("Source default/Applying patches"), "{stderr}");
 }
 
 #[test]
@@ -422,8 +423,9 @@ esac
     let good = failure.find("Source 'good' Hashing source").unwrap();
     assert!(bad < good, "{failure}");
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("⚠ release"), "{stderr}");
     assert!(
-        stderr.contains("Failed · Source bad/Hashing source, Source good/Hashing source"),
+        stderr.contains("Source bad/Hashing source, Source good/Hashing source"),
         "{stderr}"
     );
 }
@@ -643,8 +645,15 @@ esac
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("\u{1b}"), "{stderr}");
+    assert!(!stderr.contains("├─"), "{stderr}");
+    assert!(!stderr.contains("└─"), "{stderr}");
+    assert!(!stderr.contains("Pin Progress"), "{stderr}");
     assert!(stderr.contains("Processed 2 pins; 1 failed"), "{stderr}");
-    assert!(stderr.contains("nix-pins: update completed with failures:"), "{stderr}");
+    assert!(stderr.contains("Failures:"), "{stderr}");
+    assert!(
+        stderr.find("Failures:") < stderr.find("Processed 2 pins; 1 failed"),
+        "{stderr}"
+    );
     assert!(stderr.contains("bad"), "{stderr}");
     assert!(stderr.contains("checker-failed"), "{stderr}");
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
@@ -878,7 +887,7 @@ esac
     let second = run(&dir.0, &["update"]);
     let stderr = String::from_utf8_lossy(&second.stderr);
     assert!(second.status.success(), "{stderr}");
-    assert!(stderr.contains("demo unchanged at v1"), "{stderr}");
+    assert!(stderr.contains("✔ demo v1"), "{stderr}");
 }
 
 #[test]
@@ -940,7 +949,7 @@ esac
     let api = failure.find("Package 'api'").unwrap();
     let web = failure.find("Package 'web'").unwrap();
     assert!(api < web, "{failure}");
-    assert_eq!(stderr.matches("Failed ·").count(), 1, "{stderr}");
+    assert_eq!(stderr.matches("⚠ demo").count(), 1, "{stderr}");
 }
 
 #[test]
@@ -990,7 +999,7 @@ esac
     assert!(!output.status.success());
     assert!(stderr.contains("package-lock.json file does not exist"));
     assert!(stderr.contains("postPatch"));
-    assert!(stderr.contains("Failed · npmDepsHash"), "{stderr}");
+    assert!(stderr.contains("⚠ demo v1 · npmDepsHash"), "{stderr}");
     assert!(!stderr.contains("default/npmDepsHash"), "{stderr}");
 }
 
@@ -1334,7 +1343,7 @@ esac
         elapsed < std::time::Duration::from_millis(3200),
         "Checker stage took {elapsed:?}"
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("4 hashes need recalculation"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Processed 4 pins; 0 failed"));
 }
 
 #[test]
@@ -1600,6 +1609,8 @@ exit 1
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr.contains("Loading configuration failed"), "{stderr}");
+    assert!(stderr.contains("nix-pins:"), "{stderr}");
+    assert!(!stderr.contains("Processed 0 pins"), "{stderr}");
     assert!(!stderr.contains("demo failed"), "{stderr}");
     assert_eq!(fs::read(dir.0.join("pins.json")).unwrap(), original);
 }

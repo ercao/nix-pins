@@ -61,15 +61,24 @@ fn main() -> ExitCode {
 fn run_update(config: &Path, pins_path: &Path, selection: &Selection) -> ExitCode {
     let progress = progress::Progress::stderr();
     let result = update(config, pins_path, selection, &progress);
-    progress.finish();
+    let terminal = progress.finish();
     match result {
         Ok(UpdateResult { processed, failures }) => {
             let failed = failures.len();
             if failed > 0 {
-                eprintln!("nix-pins: update completed with failures:");
-                for (name, error) in failures {
-                    eprintln!("  {name}: {error}");
+                if terminal {
+                    eprintln!();
                 }
+                eprintln!("Failures:");
+                for (name, error) in failures {
+                    eprintln!("  {name}:");
+                    for line in error.lines() {
+                        eprintln!("    {line}");
+                    }
+                }
+            }
+            if terminal {
+                eprintln!();
             }
             eprintln!("Processed {processed} pins; {failed} failed");
             if failed == 0 {
@@ -79,6 +88,9 @@ fn run_update(config: &Path, pins_path: &Path, selection: &Selection) -> ExitCod
             }
         }
         Err(error) => {
+            if terminal {
+                eprintln!();
+            }
             eprintln!("nix-pins: {error}");
             ExitCode::from(1)
         }
@@ -117,21 +129,12 @@ fn update(
     selection: &Selection,
     progress: &progress::Progress,
 ) -> Result<UpdateResult, String> {
+    progress.phase(progress::Phase::LoadingConfiguration);
     let mut transaction = pins::PinsFile::transaction(pins_path).map_err(|error| error.to_string())?;
     let pins = &mut transaction.pins;
     let checker_options = checker::Options::from_env()?;
 
-    let loading = progress.operation("Loading configuration");
-    let checks = match probe::probe_checks(&config.display().to_string()).map_err(nix_error) {
-        Ok(checks) => {
-            loading.succeed();
-            checks
-        }
-        Err(error) => {
-            loading.fail();
-            return Err(error);
-        }
-    };
+    let checks = probe::probe_checks(&config.display().to_string()).map_err(nix_error)?;
     selection.validate(checks.keys().map(String::as_str))?;
     if selection.is_all() {
         pins.pins.retain(|name, _| checks.contains_key(name));
@@ -140,6 +143,7 @@ fn update(
 
     let selected: BTreeMap<_, _> = checks.into_iter().filter(|(name, _)| selection.matches(name)).collect();
     let processed = selected.len();
+    progress.phase(progress::Phase::CheckingVersions);
     let reporter = progress.reporter();
     for name in selected.keys() {
         reporter.declare(name, pins.pins.get(name).map(|pin| pin.version.as_str()));
@@ -166,17 +170,15 @@ fn update(
 
     if !versions.is_empty() {
         let config = config.display().to_string();
-        let resolving = progress.operation(format!("Resolving sources · {} pins", versions.len()));
+        progress.phase(progress::Phase::ResolvingSources);
         let empty_hashes = BTreeMap::<String, BTreeMap<String, String>>::new();
         let (mut source_probes, source_probe_failures) =
             probe_pins(&config, &versions, &empty_hashes, env_jobs("NIX_PINS_HASH_JOBS", 1));
-        resolving.succeed();
         for (pin, error) in source_probe_failures {
             reporter.failed(&pin, "Resolving sources");
             failures.insert(pin, error);
         }
         {
-            let source_recalculations = count_source_recalculations(pins, &source_probes);
             let mut expected_sources = BTreeMap::new();
             let mut tasks = Vec::new();
             for pin in versions.keys() {
@@ -238,9 +240,7 @@ fn update(
                 !failures.contains_key(pin) && expected_sources.get(pin) == Some(&resolved.len())
             });
 
-            if sources.is_empty() {
-                progress.message(format!("{source_recalculations} hashes need recalculation"));
-            } else {
+            if !sources.is_empty() {
                 let successful_versions = sources.keys().map(|pin| (pin.clone(), versions[pin].clone())).collect();
                 let source_hashes = sources
                     .iter()
@@ -254,22 +254,18 @@ fn update(
                         )
                     })
                     .collect();
-                let resolving = progress.operation(format!("Resolving derived hashes · {} pins", sources.len()));
+                progress.phase(progress::Phase::ResolvingDerivedHashes);
                 let (mut derived_probes, derived_probe_failures) = probe_pins(
                     &config,
                     &successful_versions,
                     &source_hashes,
                     env_jobs("NIX_PINS_HASH_JOBS", 1),
                 );
-                resolving.succeed();
                 for (pin, error) in derived_probe_failures {
                     reporter.failed(&pin, "Resolving derived hashes");
                     failures.insert(pin, error);
                 }
                 {
-                    let recalculations = source_recalculations + count_derived_recalculations(pins, &derived_probes);
-                    progress.message(format!("{recalculations} hashes need recalculation"));
-
                     let mut tasks = Vec::new();
                     for (pin, pin_sources) in sources {
                         if failures.contains_key(&pin) {
@@ -339,12 +335,10 @@ fn update(
     }
 
     pins.failures.extend(failures.clone());
-    let writing = progress.operation("Writing pins.json");
+    progress.phase(progress::Phase::WritingPinsFile);
     let save_result = transaction.save().map_err(|error| error.to_string());
     if save_result.is_ok() {
-        writing.succeed();
-    } else {
-        writing.fail();
+        progress.complete();
     }
 
     save_result.map(|()| UpdateResult { processed, failures })
@@ -404,8 +398,12 @@ fn run_sources(
         move |(pin, source), task| {
             let expanded = task.expanded;
             let result = resolve_source(task, &reporter);
-            if result.is_ok() && !expanded {
-                reporter.pause(pin);
+            if result.is_ok() {
+                if !expanded {
+                    reporter.pause(pin);
+                }
+            } else if expanded {
+                reporter.source_failed(pin, source);
             }
             result.map_err(|error| TaskFailure {
                 error: format!("Source '{source}' Hashing source: {error}"),
@@ -493,7 +491,11 @@ fn run_derived(
             let expanded = task.source_result.expanded;
             let result = resolve_derived(task, &reporter);
             if expanded {
-                reporter.source_done(&pin, &source);
+                if result.is_ok() {
+                    reporter.source_done(&pin, &source);
+                } else {
+                    reporter.source_failed(&pin, &source);
+                }
             }
             result
         },
@@ -725,48 +727,6 @@ where
         worker.join().unwrap();
     }
     results
-}
-
-fn count_source_recalculations(pins: &pins::PinsFile, probe_results: &BTreeMap<String, probe::ProbeResult>) -> usize {
-    probe_results
-        .iter()
-        .map(|(pin, probe)| {
-            probe
-                .sources
-                .iter()
-                .filter(|(source, result)| {
-                    pins.pins
-                        .get(pin)
-                        .and_then(|pin| pin.sources.get(*source))
-                        .and_then(|source| source.fingerprints.get("hash"))
-                        != Some(&result.src)
-                })
-                .count()
-        })
-        .sum()
-}
-
-fn count_derived_recalculations(pins: &pins::PinsFile, probe_results: &BTreeMap<String, probe::ProbeResult>) -> usize {
-    probe_results
-        .iter()
-        .map(|(pin, probe)| {
-            probe
-                .sources
-                .iter()
-                .map(|(source, result)| {
-                    let previous = pins.pins.get(pin).and_then(|pin| pin.sources.get(source));
-                    result
-                        .package_derived()
-                        .values()
-                        .flat_map(|derived| derived.iter())
-                        .filter(|(key, fingerprint)| {
-                            previous.and_then(|source| source.fingerprints.get(*key)) != Some(*fingerprint)
-                        })
-                        .count()
-                })
-                .sum::<usize>()
-        })
-        .sum()
 }
 
 fn env_jobs(name: &str, default: usize) -> usize {
