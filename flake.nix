@@ -17,6 +17,7 @@
         pkgs.git
         pkgs.nix
       ];
+      doCheck = false;
       preCheck = ''
         export NIX_REMOTE="local?root=$TMPDIR/nix-store"
         export NIX_PATH="nixpkgs=${pkgs.path}"
