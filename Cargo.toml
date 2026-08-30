@@ -5,8 +5,12 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive", "env"] }
+ctrlc = { version = "3.1.4", default-features = false }
+crosstermion = { version = "0.16", default-features = false, features = ["input-async-crossterm", "tui-crossterm"] }
 fs2 = "0.4"
-prodash = { version = "31", default-features = false, features = ["progress-tree", "render-line", "render-line-crossterm", "render-line-autoconfigure", "unit-bytes", "unit-human"] }
+futures-lite = "2.1"
+libc = "0.2"
+prodash = { version = "31", default-features = false, features = ["progress-tree", "render-tui", "render-tui-crossterm", "unit-bytes", "unit-human"] }
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 semver = "1.0"

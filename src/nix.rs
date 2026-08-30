@@ -22,6 +22,10 @@ pub enum NixProgress {
         unit: NixProgressUnit,
         label: String,
     },
+    Status {
+        detail: Option<Box<NixProgress>>,
+        activities: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,8 +39,22 @@ impl NixProgress {
         match &mut self {
             Self::Text(text) => *text = format!("{prefix} · {text}"),
             Self::Counter { label, .. } => *label = format!("{prefix} · {label}"),
+            Self::Status { detail, .. } => {
+                let value = detail
+                    .take()
+                    .map_or_else(|| Self::Text(prefix.into()), |value| (*value).with_prefix(prefix));
+                *detail = Some(Box::new(value));
+            }
         }
         self
+    }
+
+    fn label(&self) -> &str {
+        match self {
+            Self::Text(text) => text,
+            Self::Counter { label, .. } => label,
+            Self::Status { .. } => "Working",
+        }
     }
 }
 
@@ -54,34 +72,38 @@ impl From<&str> for NixProgress {
 
 /// 求值一个 Nix 表达式并以 JSON 返回。
 pub fn eval_json(expr: &str) -> Result<serde_json::Value, Error> {
-    let out = Command::new("nix")
-        .args(["eval", "--impure", "--json", "--expr", expr])
-        .output()
-        .map_err(|e| Error::Nix(e.to_string()))?;
+    let mut command = Command::new("nix");
+    command.args(["eval", "--impure", "--json", "--expr", expr]);
+    let out = crate::progress::command_output(&mut command).map_err(|error| Error::Nix(error.to_string()))?;
     if !out.status.success() {
         return Err(Error::Nix(String::from_utf8_lossy(&out.stderr).into_owned()));
     }
-    serde_json::from_slice(&out.stdout).map_err(|e| Error::Nix(e.to_string()))
+    serde_json::from_slice(&out.stdout).map_err(|error| Error::Nix(error.to_string()))
 }
 
 #[derive(Debug)]
 enum Activity {
-    Copy,
+    Copy(Vec<String>),
     Download {
         done: u64,
         total: Option<u64>,
     },
     Build {
+        name: Option<String>,
         phase: Option<(u64, String)>,
         download: Option<(u64, NixProgress)>,
     },
-    Query,
+    Query(Vec<String>),
 }
 
 #[derive(Default)]
 struct NixLog {
     activities: std::collections::BTreeMap<u64, Activity>,
     phase_sequence: u64,
+    completed_download_bytes: u64,
+    completed_download_total: u64,
+    completed_download_total_unknown: bool,
+    diagnostic: Option<String>,
 }
 
 impl NixLog {
@@ -112,20 +134,33 @@ impl NixLog {
         match action {
             "start" => {
                 let activity = match value.get("type").and_then(serde_json::Value::as_u64) {
-                    Some(100) => Activity::Copy,
+                    Some(100) => Activity::Copy(activity_fields(&value)),
                     Some(101) => Activity::Download { done: 0, total: None },
                     Some(105) => Activity::Build {
+                        name: value
+                            .get("fields")
+                            .and_then(serde_json::Value::as_array)
+                            .and_then(|fields| fields.first())
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
                         phase: None,
                         download: None,
                     },
-                    Some(108) => Activity::Query,
+                    Some(108) => Activity::Query(activity_fields(&value)),
                     Some(_) => return None,
                     None => return Some(line.into()),
                 };
                 self.activities.insert(id, activity);
             }
             "stop" => {
-                self.activities.remove(&id);
+                if let Some(Activity::Download { done, total }) = self.activities.remove(&id) {
+                    self.completed_download_bytes = self.completed_download_bytes.saturating_add(done);
+                    if let Some(total) = total {
+                        self.completed_download_total = self.completed_download_total.saturating_add(total);
+                    } else {
+                        self.completed_download_total_unknown = true;
+                    }
+                }
             }
             "result" => {
                 let Some(kind) = value.get("type").and_then(serde_json::Value::as_u64) else {
@@ -176,12 +211,16 @@ impl NixLog {
             })
             .collect();
         if !downloads.is_empty() {
-            let done = downloads.iter().map(|(done, _)| done).sum::<u64>();
+            let done = downloads.iter().fold(self.completed_download_bytes, |sum, (done, _)| {
+                sum.saturating_add(*done)
+            });
             let transfers = downloads.len();
-            let total = downloads
-                .iter()
-                .all(|(_, total)| total.is_some())
-                .then(|| downloads.iter().filter_map(|(_, total)| *total).sum());
+            let total = (!self.completed_download_total_unknown && downloads.iter().all(|(_, total)| total.is_some()))
+                .then(|| {
+                    downloads.iter().fold(self.completed_download_total, |sum, (_, total)| {
+                        sum.saturating_add(total.unwrap_or_default())
+                    })
+                });
             return Some(NixProgress::Counter {
                 current: done,
                 total,
@@ -195,7 +234,7 @@ impl NixLog {
         if self
             .activities
             .values()
-            .any(|activity| matches!(activity, Activity::Copy))
+            .any(|activity| matches!(activity, Activity::Copy(_)))
         {
             return Some(NixProgress::Text("Copying Store Path".into()));
         }
@@ -262,8 +301,67 @@ impl NixLog {
         }
         self.activities
             .values()
-            .any(|activity| matches!(activity, Activity::Query))
+            .any(|activity| matches!(activity, Activity::Query(_)))
             .then(|| NixProgress::Text("Querying Cache".into()))
+    }
+
+    fn progress(&self) -> Option<NixProgress> {
+        let detail = self.detail();
+        let activities = self.activity_lines();
+        if activities.is_empty() {
+            detail
+        } else {
+            Some(NixProgress::Status {
+                detail: detail.map(Box::new),
+                activities,
+            })
+        }
+    }
+
+    fn activity_lines(&self) -> Vec<String> {
+        let mut lines: Vec<_> = self
+            .activities
+            .values()
+            .filter_map(|activity| match activity {
+                Activity::Build { name, phase, download } => {
+                    let mut line = name
+                        .as_deref()
+                        .map_or_else(|| "Building".into(), |name| format!("Building {name}"));
+                    if let Some((_, phase)) = phase {
+                        line.push_str(" · ");
+                        line.push_str(phase);
+                    } else if let Some((_, progress)) = download {
+                        line.push_str(" · ");
+                        line.push_str(progress.label());
+                    }
+                    Some(line)
+                }
+                Activity::Copy(fields) => Some(activity_line("Copying", fields)),
+                Activity::Query(fields) => Some(activity_line("Querying", fields)),
+                Activity::Download { .. } => None,
+            })
+            .collect();
+        lines.extend(self.diagnostic.iter().cloned());
+        lines
+    }
+}
+
+fn activity_fields(value: &serde_json::Value) -> Vec<String> {
+    value
+        .get("fields")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn activity_line(action: &str, fields: &[String]) -> String {
+    if fields.is_empty() {
+        action.into()
+    } else {
+        format!("{action} {}", fields.join(" → "))
     }
 }
 
@@ -348,8 +446,11 @@ fn build(
 ) -> Result<(std::process::ExitStatus, String), Error> {
     use std::io::{BufRead, BufReader, Read};
     use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
-    let mut child = Command::new("nix")
+    let mut command = Command::new("nix");
+    command
         .args([
             "build",
             "--no-link",
@@ -359,9 +460,9 @@ fn build(
             &format!("{drv_path}^out"),
         ])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| Error::Nix(error.to_string()))?;
+        .stderr(Stdio::piped());
+    crate::progress::configure_child_process(&mut command);
+    let mut child = command.spawn().map_err(|error| Error::Nix(error.to_string()))?;
     let mut stdout = child
         .stdout
         .take()
@@ -374,35 +475,64 @@ fn build(
         .stderr
         .take()
         .ok_or_else(|| Error::Nix("无法读取 Nix stderr".into()))?;
+    let (lines, receiver) = mpsc::channel();
+    let stderr = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
     let mut state = NixLog::default();
     let mut last_detail = None;
     let mut diagnostics = String::new();
     let mut stderr_error = None;
-    for line in BufReader::new(stderr).lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(error) => {
+    let mut was_cancelled = false;
+    loop {
+        if crate::progress::cancelled() {
+            was_cancelled = true;
+            crate::progress::kill_child_tree(&mut child);
+            break;
+        }
+        match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(Ok(line)) => {
+                if let Some(line) = state.push(&line) {
+                    diagnostics.push_str(&line);
+                    diagnostics.push('\n');
+                    state.diagnostic = Some(line);
+                }
+                let detail = state.progress();
+                if detail != last_detail {
+                    progress(detail.clone());
+                    last_detail = detail;
+                }
+                state.diagnostic = None;
+            }
+            Ok(Err(error)) => {
                 stderr_error = Some(error);
+                crate::progress::kill_child_tree(&mut child);
                 break;
             }
-        };
-        if let Some(line) = state.push(&line) {
-            diagnostics.push_str(&line);
-            diagnostics.push('\n');
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if child
+                    .try_wait()
+                    .map_err(|error| Error::Nix(error.to_string()))?
+                    .is_some()
+                {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        let detail = state.detail();
-        if detail != last_detail {
-            progress(detail.clone());
-            last_detail = detail;
-        }
-    }
-    if stderr_error.is_some() {
-        let _ = child.kill();
     }
     let wait_result = child.wait();
+    let _ = stderr.join();
     let stdout = stdout.join();
     progress(None);
 
+    if was_cancelled {
+        return Err(Error::Nix("已取消".into()));
+    }
     if let Some(error) = stderr_error {
         return Err(Error::Nix(error.to_string()));
     }
@@ -528,6 +658,26 @@ mod tests {
     }
 
     #[test]
+    fn internal_json_keeps_completed_downloads_in_the_next_total() {
+        let mut log = NixLog::default();
+        log.push(r#"@nix {"action":"start","id":1,"type":101,"fields":["hidden"]}"#);
+        log.push(r#"@nix {"action":"result","id":1,"type":105,"fields":[1048576,1048576,0,0]}"#);
+        log.push(r#"@nix {"action":"stop","id":1}"#);
+        log.push(r#"@nix {"action":"start","id":2,"type":101,"fields":["hidden"]}"#);
+        log.push(r#"@nix {"action":"result","id":2,"type":105,"fields":[524288,2097152,0,0]}"#);
+
+        assert_eq!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 1_572_864,
+                total: Some(3_145_728),
+                unit: NixProgressUnit::Bytes,
+                label: "Downloading · 1 transfer".into(),
+            })
+        );
+    }
+
+    #[test]
     fn internal_json_omits_percentage_when_any_download_total_is_unknown() {
         let mut log = NixLog::default();
         log.push(r#"@nix {"action":"start","id":1,"type":101,"fields":["hidden"]}"#);
@@ -554,6 +704,26 @@ mod tests {
             Some(NixProgress::Counter {
                 current: 1_048_576,
                 total: Some(1_048_576),
+                unit: NixProgressUnit::Bytes,
+                label: "Downloading · 1 transfer".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn completed_unknown_download_keeps_later_total_unknown() {
+        let mut log = NixLog::default();
+        log.push(r#"@nix {"action":"start","id":1,"type":101,"fields":["hidden"]}"#);
+        log.push(r#"@nix {"action":"result","id":1,"type":105,"fields":[10,0,0,0]}"#);
+        log.push(r#"@nix {"action":"stop","id":1,"type":101}"#);
+        log.push(r#"@nix {"action":"start","id":2,"type":101,"fields":["hidden"]}"#);
+        log.push(r#"@nix {"action":"result","id":2,"type":105,"fields":[5,20,0,0]}"#);
+
+        assert_eq!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 15,
+                total: None,
                 unit: NixProgressUnit::Bytes,
                 label: "Downloading · 1 transfer".into(),
             })
@@ -706,5 +876,42 @@ mod tests {
         }
         assert_eq!(log.push("ordinary diagnostic"), Some("ordinary diagnostic".into()));
         assert_eq!(log.push("@nix {broken"), Some("@nix {broken".into()));
+    }
+
+    #[test]
+    fn internal_json_exposes_parallel_build_activity_lines() {
+        let mut log = NixLog::default();
+        log.push(r#"@nix {"action":"start","id":1,"type":105,"fields":["/nix/store/aaa-demo.drv"]}"#);
+        log.push(r#"@nix {"action":"result","id":1,"type":104,"fields":["buildPhase"]}"#);
+        log.push(r#"@nix {"action":"start","id":2,"type":105,"fields":["/nix/store/bbb-other.drv"]}"#);
+        log.push(r#"@nix {"action":"result","id":2,"type":104,"fields":["installPhase"]}"#);
+
+        assert_eq!(
+            log.progress(),
+            Some(NixProgress::Status {
+                detail: Some(Box::new(NixProgress::Text("installPhase".into()))),
+                activities: vec![
+                    "Building /nix/store/aaa-demo.drv · buildPhase".into(),
+                    "Building /nix/store/bbb-other.drv · installPhase".into(),
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn internal_json_keeps_copy_query_and_build_paths_in_activity_lines() {
+        let mut log = NixLog::default();
+        log.push(r#"@nix {"action":"start","id":1,"type":100,"fields":["/nix/store/from","/nix/store/to"]}"#);
+        log.push(r#"@nix {"action":"start","id":2,"type":108,"fields":["https://cache.example/path?token=hidden"]}"#);
+        log.push(r#"@nix {"action":"start","id":3,"type":105,"fields":["/nix/store/demo.drv"]}"#);
+
+        assert_eq!(
+            log.activity_lines(),
+            vec![
+                "Copying /nix/store/from → /nix/store/to".to_owned(),
+                "Querying https://cache.example/path?token=hidden".to_owned(),
+                "Building /nix/store/demo.drv".to_owned(),
+            ]
+        );
     }
 }

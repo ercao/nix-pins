@@ -120,11 +120,10 @@ pub fn check(checker: &Checker, options: &Options) -> Result<String, String> {
     }
 }
 
-fn command_version(command: &str) -> Result<String, String> {
-    let output = Command::new("sh")
-        .args(["-c", command])
-        .output()
-        .map_err(|error| error.to_string())?;
+fn command_version(shell_command: &str) -> Result<String, String> {
+    let mut command = Command::new("sh");
+    command.args(["-c", shell_command]);
+    let output = crate::progress::command_output(&mut command).map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
@@ -212,33 +211,32 @@ fn git_version(config: &GitChecker) -> Result<String, String> {
 
 fn git_remote_version(url: &str, reference: &str) -> Result<String, String> {
     let peeled = format!("{reference}^{{}}");
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .env("GIT_TERMINAL_PROMPT", "0")
-        .args(["ls-remote", url, reference, &peeled])
-        .output()
-        .map_err(|error| error.to_string())?;
+        .args(["ls-remote", url, reference, &peeled]);
+    let output = crate::progress::command_output(&mut command).map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
-
     let output = String::from_utf8_lossy(&output.stdout);
-    let find = |target: &str| {
+    let find = |wanted| {
         output.lines().find_map(|line| {
-            let (commit, found_ref) = line.split_once('\t')?;
-            (found_ref == target).then(|| commit.to_string())
+            let (commit, target) = line.split_once('\t')?;
+            (target == wanted).then(|| commit.to_owned())
         })
     };
-    find(&peeled)
+    find(peeled.as_str())
         .or_else(|| find(reference))
-        .ok_or_else(|| format!("git Checker found no remote ref '{reference}'"))
+        .ok_or_else(|| format!("git reference '{reference}' not found"))
 }
 
 fn git_remote_tags(url: &str) -> Result<String, String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .env("GIT_TERMINAL_PROMPT", "0")
-        .args(["ls-remote", "--tags", "--refs", url])
-        .output()
-        .map_err(|error| error.to_string())?;
+        .args(["ls-remote", "--tags", "--refs", url]);
+    let output = crate::progress::command_output(&mut command).map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }

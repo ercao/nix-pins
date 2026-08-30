@@ -59,9 +59,23 @@ fn main() -> ExitCode {
 
 /// 部分失败保留旧条目，以非零退出码结束（ADR-0007）。
 fn run_update(config: &Path, pins_path: &Path, selection: &Selection) -> ExitCode {
-    let progress = progress::Progress::stderr();
+    let progress = match progress::Progress::stderr() {
+        Ok(progress) => progress,
+        Err(error) => {
+            eprintln!("nix-pins: 无法安装 Ctrl+C 处理器: {error}");
+            return ExitCode::from(1);
+        }
+    };
     let result = update(config, pins_path, selection, &progress);
     let terminal = progress.finish();
+    if progress::cancelled() {
+        if terminal {
+            eprintln!();
+        }
+        eprintln!("nix-pins: 已取消");
+        eprintln!("Interrupted");
+        return ExitCode::from(130);
+    }
     match result {
         Ok(UpdateResult { processed, failures }) => {
             let failed = failures.len();
@@ -91,7 +105,7 @@ fn run_update(config: &Path, pins_path: &Path, selection: &Selection) -> ExitCod
             if terminal {
                 eprintln!();
             }
-            eprintln!("nix-pins: {error}");
+            eprintln!("nix-pins: {}", progress::sanitize_activity(&error));
             ExitCode::from(1)
         }
     }
@@ -117,7 +131,7 @@ fn run_status(config: &Path, pins_path: &Path, selection: &Selection) -> ExitCod
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("nix-pins: {error}");
+            eprintln!("nix-pins: {}", progress::sanitize_activity(&error));
             ExitCode::from(1)
         }
     }
@@ -129,6 +143,7 @@ fn update(
     selection: &Selection,
     progress: &progress::Progress,
 ) -> Result<UpdateResult, String> {
+    ensure_not_cancelled()?;
     progress.phase(progress::Phase::LoadingConfiguration);
     let mut transaction = pins::PinsFile::transaction(pins_path).map_err(|error| error.to_string())?;
     let pins = &mut transaction.pins;
@@ -168,6 +183,7 @@ fn update(
         }
     }
 
+    ensure_not_cancelled()?;
     if !versions.is_empty() {
         let config = config.display().to_string();
         progress.phase(progress::Phase::ResolvingSources);
@@ -240,6 +256,7 @@ fn update(
                 !failures.contains_key(pin) && expected_sources.get(pin) == Some(&resolved.len())
             });
 
+            ensure_not_cancelled()?;
             if !sources.is_empty() {
                 let successful_versions = sources.keys().map(|pin| (pin.clone(), versions[pin].clone())).collect();
                 let source_hashes = sources
@@ -261,6 +278,7 @@ fn update(
                     &source_hashes,
                     env_jobs("NIX_PINS_HASH_JOBS", 1),
                 );
+                ensure_not_cancelled()?;
                 for (pin, error) in derived_probe_failures {
                     reporter.failed(&pin, "Resolving derived hashes");
                     failures.insert(pin, error);
@@ -334,6 +352,10 @@ fn update(
         }
     }
 
+    ensure_not_cancelled()?;
+    for error in failures.values_mut() {
+        *error = progress::sanitize_activity(error);
+    }
     pins.failures.extend(failures.clone());
     progress.phase(progress::Phase::WritingPinsFile);
     let save_result = transaction.save().map_err(|error| error.to_string());
@@ -342,6 +364,14 @@ fn update(
     }
 
     save_result.map(|()| UpdateResult { processed, failures })
+}
+
+fn ensure_not_cancelled() -> Result<(), String> {
+    if progress::cancelled() {
+        Err("已取消".into())
+    } else {
+        Ok(())
+    }
 }
 
 fn probe_pins(
@@ -714,6 +744,9 @@ where
         let function = Arc::clone(&function);
         let sender = sender.clone();
         workers.push(std::thread::spawn(move || loop {
+            if progress::cancelled() {
+                break;
+            }
             let Some((key, task)) = queue.lock().unwrap().pop_front() else {
                 break;
             };
@@ -739,14 +772,15 @@ fn env_jobs(name: &str, default: usize) -> usize {
 
 fn nix_error(error: nix::Error) -> String {
     match error {
-        nix::Error::NoGotLine(output) | nix::Error::Nix(output) => output,
+        nix::Error::NoGotLine(output) | nix::Error::Nix(output) => progress::sanitize_activity(&output),
     }
 }
 
 fn hash_error(key: &str, error: nix::Error) -> String {
     match error {
         nix::Error::NoGotLine(output) if key == "npmDepsHash" => format!(
-            "{output}\nnix-pins: npmDepsHash needs a lockfile; use postPatch to provide package-lock.json when the source archive omits it"
+            "{}\nnix-pins: npmDepsHash needs a lockfile; use postPatch to provide package-lock.json when the source archive omits it",
+            progress::sanitize_activity(&output)
         ),
         error => nix_error(error),
     }

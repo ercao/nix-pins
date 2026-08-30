@@ -1,12 +1,160 @@
 use crate::nix::{NixProgress, NixProgressUnit};
-use prodash::render::line::{self, StreamKind};
+use crosstermion::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use futures_lite::Stream;
+use prodash::messages::MessageLevel;
+use prodash::render::tui;
 use prodash::tree::{root, Item, Root};
 use prodash::unit::{self, display::Mode};
 use std::collections::BTreeMap;
-use std::io::{self, Write};
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, Mutex};
+use std::io::{self, IsTerminal, Write};
+use std::pin::Pin as FuturePin;
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::task::{Context, Poll};
+use std::thread;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+static CANCELLED: AtomicBool = AtomicBool::new(false);
+
+pub fn cancelled() -> bool {
+    CANCELLED.load(Ordering::SeqCst)
+}
+
+pub(crate) fn command_output(command: &mut Command) -> io::Result<Output> {
+    command_output_with_cancel(command, &CANCELLED)
+}
+
+fn command_output_with_cancel(command: &mut Command, cancelled: &AtomicBool) -> io::Result<Output> {
+    use std::io::Read;
+    use std::time::Duration;
+
+    configure_child_process(command);
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("无法读取子进程 stdout"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("无法读取子进程 stderr"))?;
+    let stdout = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let status = loop {
+        if cancelled.load(Ordering::SeqCst) {
+            kill_child_tree(&mut child);
+            break child.wait()?;
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    let stdout = stdout
+        .join()
+        .map_err(|_| io::Error::other("读取子进程 stdout 的线程异常退出"))??;
+    let stderr = stderr
+        .join()
+        .map_err(|_| io::Error::other("读取子进程 stderr 的线程异常退出"))??;
+    Ok(Output { status, stdout, stderr })
+}
+
+pub(crate) fn configure_child_process(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+}
+
+pub(crate) fn kill_child_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        // SAFETY: 子进程在 spawn 前已进入以自身 pid 为 id 的独立进程组。
+        if unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) } == -1 {
+            let _ = child.kill();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+}
+
+fn cancel() {
+    CANCELLED.store(true, Ordering::SeqCst);
+}
+
+fn tui_dimensions_supported((width, height): (u16, u16)) -> bool {
+    width >= 60 && height >= 12
+}
+
+struct EventStream {
+    receiver: mpsc::Receiver<tui::Event>,
+}
+
+impl Stream for EventStream {
+    type Item = tui::Event;
+
+    fn poll_next(self: FuturePin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.receiver.try_recv() {
+            Ok(event) => Poll::Ready(Some(event)),
+            Err(mpsc::TryRecvError::Empty) => Poll::Pending,
+            Err(mpsc::TryRecvError::Disconnected) => Poll::Ready(None),
+        }
+    }
+}
+
+struct TuiRenderer {
+    events: mpsc::Sender<tui::Event>,
+    shutting_down: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl TuiRenderer {
+    fn start(root: &Arc<Root>) -> io::Result<Self> {
+        let (events, receiver) = mpsc::channel();
+        let options = tui::Options {
+            title: "Nix Pins".into(),
+            throughput: true,
+            recompute_column_width_every_nth_frame: Some(10),
+            ..Default::default()
+        };
+        let render = tui::render_with_input(io::stderr(), Arc::downgrade(root), options, EventStream { receiver })?;
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let renderer_stopping = Arc::clone(&shutting_down);
+        let handle = thread::spawn(move || {
+            futures_lite::future::block_on(render);
+            if !renderer_stopping.load(Ordering::SeqCst) {
+                cancel();
+            }
+        });
+        Ok(Self {
+            events,
+            shutting_down,
+            handle: Some(handle),
+        })
+    }
+
+    fn event_sender(&self) -> mpsc::Sender<tui::Event> {
+        self.events.clone()
+    }
+
+    fn shutdown(&mut self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        let _ = self
+            .events
+            .send(tui::Event::Input(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)));
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PinStep {
@@ -70,14 +218,10 @@ impl Status {
     fn symbol(self) -> &'static str {
         match self {
             Self::Waiting => "⏸",
-            Self::Active => "⏵",
+            Self::Active => "",
             Self::Success => "✔",
             Self::Failure => "⚠",
         }
-    }
-
-    fn required(self) -> bool {
-        matches!(self, Self::Active | Self::Failure)
     }
 }
 
@@ -86,6 +230,7 @@ struct Node {
     status: Status,
     step: Option<String>,
     detail: Option<NixProgress>,
+    activities: Vec<String>,
 }
 
 impl Node {
@@ -94,6 +239,7 @@ impl Node {
             status: Status::Waiting,
             step: None,
             detail: None,
+            activities: Vec::new(),
         }
     }
 
@@ -106,12 +252,22 @@ impl Node {
         if detail.is_some() {
             self.status = Status::Active;
         }
-        self.detail = detail;
+        match detail {
+            Some(NixProgress::Status { detail, activities }) => {
+                self.detail = detail.map(|detail| *detail);
+                self.activities = activities;
+            }
+            detail => {
+                self.detail = detail;
+                self.activities.clear();
+            }
+        }
     }
 
     fn clear_activity(&mut self) {
         self.step = None;
         self.detail = None;
+        self.activities.clear();
     }
 
     fn pause(&mut self) {
@@ -128,6 +284,7 @@ impl Node {
         self.status = Status::Failure;
         self.step = step;
         self.detail = None;
+        self.activities.clear();
     }
 }
 
@@ -164,6 +321,17 @@ struct TreeNode {
     children: Vec<TreeNode>,
 }
 
+impl TreeNode {
+    fn new(key: NodeKey, base: String, node: Node, children: Vec<TreeNode>) -> Self {
+        Self {
+            key,
+            base,
+            node,
+            children,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct SharedWriter {
     inner: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -198,14 +366,26 @@ struct State {
     output: SharedWriter,
     output_is_terminal: bool,
     terminal_dimensions: (u16, u16),
-    auto_dimensions: bool,
-    renderer_options: Option<line::Options>,
-    renderer: Option<line::JoinHandle>,
+    events: Option<mpsc::Sender<tui::Event>>,
     phase: Option<Phase>,
     pins: BTreeMap<String, Pin>,
-    title: Option<Item>,
     items: BTreeMap<NodeKey, Item>,
+    activity_state: BTreeMap<NodeKey, Vec<String>>,
     completion_order: u64,
+}
+
+struct SpinnerUnit;
+
+impl unit::DisplayValue for SpinnerUnit {
+    fn display_current_value(&self, _: &mut dyn std::fmt::Write, _: usize, _: Option<usize>) -> std::fmt::Result {
+        Ok(())
+    }
+
+    fn dyn_hash(&self, _: &mut dyn std::hash::Hasher) {}
+
+    fn display_unit(&self, _: &mut dyn std::fmt::Write, _: usize) -> std::fmt::Result {
+        Ok(())
+    }
 }
 
 impl State {
@@ -214,22 +394,18 @@ impl State {
         output: SharedWriter,
         output_is_terminal: bool,
         terminal_dimensions: (u16, u16),
-        auto_dimensions: bool,
-        renderer_options: Option<line::Options>,
-        renderer: Option<line::JoinHandle>,
+        events: Option<mpsc::Sender<tui::Event>>,
     ) -> Self {
         Self {
             root,
             output,
             output_is_terminal,
             terminal_dimensions,
-            auto_dimensions,
-            renderer_options,
-            renderer,
+            events,
             phase: None,
             pins: BTreeMap::new(),
-            title: None,
             items: BTreeMap::new(),
+            activity_state: BTreeMap::new(),
             completion_order: 0,
         }
     }
@@ -260,64 +436,33 @@ impl State {
         self.rebuild();
     }
 
-    fn refresh_dimensions(&mut self) -> bool {
-        if self.auto_dimensions && self.output_is_terminal {
-            let dimensions = line::Options::default()
-                .auto_configure(StreamKind::Stderr)
-                .terminal_dimensions;
-            if dimensions != self.terminal_dimensions {
-                self.terminal_dimensions = dimensions;
-                return true;
-            }
-        }
-        false
-    }
-
     fn rebuild(&mut self) {
         if !self.output_is_terminal {
             return;
         }
-        let resized = self.refresh_dimensions();
         self.items.clear();
-        self.title.take();
 
         let trees = self.visible_trees();
-        let title_name = self.title_name(trees.len());
-        let mut title = self.root.add_child(title_name);
         let mut items = BTreeMap::new();
         for tree in &trees {
-            materialize_tree(&mut title, tree, 1, self.terminal_dimensions.0, &mut items);
+            materialize_root(&self.root, tree, self.terminal_dimensions.0, &mut items);
         }
         self.items = items;
-        self.title = Some(title);
-        if resized {
-            self.restart_renderer();
-        }
-    }
-
-    fn restart_renderer(&mut self) {
-        let Some(mut options) = self.renderer_options.clone() else {
-            return;
-        };
-        if let Some(renderer) = self.renderer.take() {
-            renderer.shutdown_and_wait();
-        }
-        options.terminal_dimensions = self.terminal_dimensions;
-        self.renderer = catch_unwind(AssertUnwindSafe(|| {
-            line::render(self.output.clone(), Arc::downgrade(&self.root), options)
-        }))
-        .ok();
-    }
-
-    fn shutdown_renderer(&mut self) {
-        self.renderer_options = None;
-        if let Some(renderer) = self.renderer.take() {
-            renderer.shutdown_and_wait();
-        }
+        self.sync_activity_feed();
+        self.send_information();
     }
 
     fn refresh_items(&mut self) {
         if !self.output_is_terminal {
+            return;
+        }
+        let mut expected_keys = Vec::new();
+        for tree in self.visible_trees() {
+            collect_tree_keys(&tree, &mut expected_keys);
+        }
+        expected_keys.sort();
+        if expected_keys != self.items.keys().cloned().collect::<Vec<_>>() {
+            self.rebuild();
             return;
         }
         let width = self.terminal_dimensions.0;
@@ -330,6 +475,64 @@ impl State {
                 apply_node(item, &base, &node, level, width);
             }
         }
+        self.sync_activity_feed();
+        self.send_information();
+    }
+
+    fn sync_activity_feed(&mut self) {
+        let mut current = BTreeMap::new();
+        for tree in self.visible_trees() {
+            collect_activities(&tree, &mut current);
+        }
+        for (key, activities) in &current {
+            let previous = self.activity_state.get(key);
+            for activity in activities {
+                if !previous.is_some_and(|previous| previous.contains(activity)) {
+                    if let Some(item) = self.items.get(key) {
+                        item.message(activity_message_level(activity), sanitize_activity(activity));
+                    }
+                }
+            }
+        }
+        self.activity_state = current;
+    }
+
+    fn information_lines(&self) -> Vec<tui::Line> {
+        let completed = self
+            .pins
+            .values()
+            .filter(|pin| pin.node.status == Status::Success)
+            .count();
+        let failed = self
+            .pins
+            .values()
+            .filter(|pin| pin.node.status == Status::Failure)
+            .count();
+        let activities = self.activity_state.values().flatten();
+        let builds = activities.clone().filter(|line| line.starts_with("Building")).count();
+        let copies = activities.clone().filter(|line| line.starts_with("Copying")).count();
+        let queries = activities.filter(|line| line.starts_with("Querying")).count();
+        let downloads = self.pins.values().map(count_pin_downloads).sum::<usize>();
+        vec![
+            tui::Line::Title("Update".into()),
+            tui::Line::Text(format!(
+                "Phase: {}",
+                self.phase.unwrap_or(Phase::LoadingConfiguration).label()
+            )),
+            tui::Line::Text(format!("Pins: {completed}/{} · {failed} failed", self.pins.len())),
+            tui::Line::Title("Nix".into()),
+            tui::Line::Text(format!(
+                "Build {builds} · Download {downloads} · Copy {copies} · Query {queries}"
+            )),
+            tui::Line::Title("Keys".into()),
+            tui::Line::Text("j/k scroll · q/Esc/Ctrl+C cancel".into()),
+        ]
+    }
+
+    fn send_information(&self) {
+        if let Some(events) = &self.events {
+            let _ = events.send(tui::Event::SetInformation(self.information_lines()));
+        }
     }
 
     fn visible_trees(&self) -> Vec<TreeNode> {
@@ -340,53 +543,7 @@ impl State {
     }
 
     fn visible_pin_names(&self) -> Vec<String> {
-        let budget = if self.terminal_dimensions.1 == 0 {
-            20
-        } else {
-            usize::from(self.terminal_dimensions.1).saturating_div(3).max(1)
-        };
-        let mut remaining = budget.saturating_sub(1);
-        let mut visible = Vec::new();
-
-        for (name, pin) in &self.pins {
-            if pin.node.status.required() {
-                visible.push(name.clone());
-                remaining = remaining.saturating_sub(pin_line_count(pin));
-            }
-        }
-
-        for (name, pin) in &self.pins {
-            if pin.node.status == Status::Waiting {
-                let lines = pin_line_count(pin);
-                if lines <= remaining {
-                    visible.push(name.clone());
-                    remaining -= lines;
-                }
-            }
-        }
-
-        let mut completed: Vec<_> = self
-            .pins
-            .iter()
-            .filter(|(_, pin)| pin.node.status == Status::Success)
-            .collect();
-        completed.sort_by(|(left_name, left), (right_name, right)| {
-            right
-                .completed_at
-                .cmp(&left.completed_at)
-                .then_with(|| left_name.cmp(right_name))
-        });
-        for (name, pin) in completed {
-            let lines = pin_line_count(pin);
-            if lines <= remaining {
-                visible.push(name.clone());
-                remaining -= lines;
-            }
-        }
-
-        visible.sort();
-        visible.dedup();
-        visible
+        self.pins.keys().cloned().collect()
     }
 
     fn title_name(&self, visible: usize) -> String {
@@ -408,38 +565,38 @@ impl State {
         let mut children = Vec::new();
         if pin.sources_collapsed {
             for (package, node) in &pin.packages {
-                children.push(TreeNode {
-                    key: NodeKey::PinPackage(name.into(), package.clone()),
-                    base: package.clone(),
-                    node: node.clone(),
-                    children: Vec::new(),
-                });
+                children.push(TreeNode::new(
+                    NodeKey::PinPackage(name.into(), package.clone()),
+                    package.clone(),
+                    node.clone(),
+                    Vec::new(),
+                ));
             }
         } else {
             for (source_name, source) in &pin.sources {
                 let mut packages = Vec::new();
                 for (package, node) in &source.packages {
-                    packages.push(TreeNode {
-                        key: NodeKey::SourcePackage(name.into(), source_name.clone(), package.clone()),
-                        base: package.clone(),
-                        node: node.clone(),
-                        children: Vec::new(),
-                    });
+                    packages.push(TreeNode::new(
+                        NodeKey::SourcePackage(name.into(), source_name.clone(), package.clone()),
+                        package.clone(),
+                        node.clone(),
+                        Vec::new(),
+                    ));
                 }
-                children.push(TreeNode {
-                    key: NodeKey::Source(name.into(), source_name.clone()),
-                    base: source_name.clone(),
-                    node: source.node.clone(),
-                    children: packages,
-                });
+                children.push(TreeNode::new(
+                    NodeKey::Source(name.into(), source_name.clone()),
+                    source_name.clone(),
+                    source.node.clone(),
+                    packages,
+                ));
             }
         }
-        Some(TreeNode {
-            key: NodeKey::Pin(name.into()),
-            base: pin_base(name, pin),
-            node: pin.node.clone(),
+        Some(TreeNode::new(
+            NodeKey::Pin(name.into()),
+            pin_base(name, pin),
+            pin.node.clone(),
             children,
-        })
+        ))
     }
 
     fn node_for_key(&self, key: &NodeKey) -> Option<(String, Node, usize)> {
@@ -470,7 +627,6 @@ impl State {
             }
             return;
         }
-        self.refresh_dimensions();
         let trees = self.visible_trees();
         let title = self.title_name(trees.len());
         let failed_global = self.phase != Some(Phase::Done);
@@ -491,54 +647,72 @@ impl State {
             let _ = writeln!(self.output, "{line}");
         }
     }
+
+    fn complete_pin(&mut self, name: &str) {
+        let Some(pin) = self.pins.get_mut(name) else {
+            return;
+        };
+        if matches!(pin.node.status, Status::Success | Status::Failure) {
+            return;
+        }
+        pin.node.succeed();
+        self.completion_order = self.completion_order.saturating_add(1);
+        pin.completed_at = Some(self.completion_order);
+        self.log_pin(name);
+    }
 }
 
 pub struct Progress {
     state: Arc<Mutex<State>>,
     output_is_terminal: bool,
+    renderer: Mutex<Option<TuiRenderer>>,
 }
 
 impl Progress {
-    pub fn stderr() -> Self {
-        let options = line::Options {
-            frames_per_second: 10.0,
-            throughput: true,
-            initial_delay: None,
-            hide_cursor: false,
-            ..line::Options::default().auto_configure(StreamKind::Stderr)
-        };
-        Self::new(Box::new(io::stderr()), options, true, true)
+    pub fn stderr() -> Result<Self, ctrlc::Error> {
+        CANCELLED.store(false, Ordering::SeqCst);
+        let dimensions = crosstermion::crossterm::terminal::size().unwrap_or((80, 24));
+        let render = io::stderr().is_terminal() && tui_dimensions_supported(dimensions);
+        let progress = Self::new(Box::new(io::stderr()), dimensions, render, render);
+        let events = progress
+            .renderer
+            .lock()
+            .ok()
+            .and_then(|renderer| renderer.as_ref().map(TuiRenderer::event_sender));
+        ctrlc::set_handler(move || {
+            cancel();
+            if let Some(events) = &events {
+                let _ = events.send(tui::Event::Input(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)));
+            }
+        })?;
+        Ok(progress)
     }
 
-    fn new(output: Box<dyn Write + Send>, options: line::Options, auto_dimensions: bool, render: bool) -> Self {
+    fn new(
+        output: Box<dyn Write + Send>,
+        terminal_dimensions: (u16, u16),
+        render: bool,
+        terminal_output: bool,
+    ) -> Self {
         let root: Arc<Root> = root::Options {
             message_buffer_capacity: 1024,
             ..Default::default()
         }
         .into();
-        let output_is_terminal = options.output_is_terminal;
-        let terminal_dimensions = options.terminal_dimensions;
-        let output = SharedWriter::new(output);
-        let renderer_options = (output_is_terminal && render).then(|| options.clone());
-        let renderer = if renderer_options.is_some() {
-            catch_unwind(AssertUnwindSafe(|| {
-                line::render(output.clone(), Arc::downgrade(&root), options)
-            }))
-            .ok()
-        } else {
-            None
-        };
-        Self {
-            state: Arc::new(Mutex::new(State::new(
-                root,
-                output,
-                output_is_terminal,
-                terminal_dimensions,
-                auto_dimensions,
-                renderer_options,
-                renderer,
-            ))),
+        let renderer = render.then(|| TuiRenderer::start(&root)).transpose().ok().flatten();
+        let output_is_terminal = if render { renderer.is_some() } else { terminal_output };
+        let events = renderer.as_ref().map(TuiRenderer::event_sender);
+        let state = Arc::new(Mutex::new(State::new(
+            root,
+            SharedWriter::new(output),
             output_is_terminal,
+            terminal_dimensions,
+            events,
+        )));
+        Self {
+            state,
+            output_is_terminal,
+            renderer: Mutex::new(renderer),
         }
     }
 
@@ -569,8 +743,10 @@ impl Progress {
     }
 
     fn shutdown(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.shutdown_renderer();
+        if let Ok(mut renderer) = self.renderer.lock() {
+            if let Some(mut renderer) = renderer.take() {
+                renderer.shutdown();
+            }
         }
     }
 
@@ -588,13 +764,7 @@ impl Progress {
     fn test(non_terminal: bool, dimensions: (u16, u16)) -> (Self, Arc<Mutex<Vec<u8>>>) {
         let output = Arc::new(Mutex::new(Vec::new()));
         let writer = BufferWriter(Arc::clone(&output));
-        let options = line::Options {
-            output_is_terminal: !non_terminal,
-            terminal_dimensions: dimensions,
-            throughput: true,
-            ..Default::default()
-        };
-        (Self::new(Box::new(writer), options, false, false), output)
+        (Self::new(Box::new(writer), dimensions, false, !non_terminal), output)
     }
 }
 
@@ -691,11 +861,22 @@ impl Reporter {
     }
 
     pub fn source_done(&self, name: &str, source: &str) {
-        self.with_pin(name, |pin| {
-            if pin.sources_collapsed && source == "default" {
+        self.with_state(|state| {
+            let Some(pin) = state.pins.get_mut(name) else {
+                return;
+            };
+            let completed = if pin.sources_collapsed && source == "default" {
                 pin.node.clear_activity();
-            } else if let Some(source) = pin.sources.get_mut(source) {
+                true
+            } else {
+                let Some(source) = pin.sources.get_mut(source) else {
+                    return;
+                };
                 source.node.succeed();
+                pin.sources.values().all(|source| source.node.status == Status::Success)
+            };
+            if completed {
+                state.complete_pin(name);
             }
         });
     }
@@ -803,18 +984,7 @@ impl Reporter {
     }
 
     pub fn done(&self, name: &str, _packages: Option<usize>) {
-        self.with_state(|state| {
-            let Some(pin) = state.pins.get_mut(name) else {
-                return;
-            };
-            if matches!(pin.node.status, Status::Success | Status::Failure) {
-                return;
-            }
-            pin.node.succeed();
-            state.completion_order = state.completion_order.saturating_add(1);
-            pin.completed_at = Some(state.completion_order);
-            state.log_pin(name);
-        });
+        self.with_state(|state| state.complete_pin(name));
     }
 
     pub fn failed(&self, name: &str, location: impl Into<String>) {
@@ -970,15 +1140,75 @@ fn source_name(key: &NodeKey) -> &str {
     }
 }
 
-fn pin_line_count(pin: &Pin) -> usize {
-    let mut lines = 1;
-    if pin.sources_collapsed {
-        lines += pin.packages.len();
-    } else {
-        lines += pin.sources.len();
-        lines += pin.sources.values().map(|source| source.packages.len()).sum::<usize>();
+fn collect_tree_keys(tree: &TreeNode, keys: &mut Vec<NodeKey>) {
+    keys.push(tree.key.clone());
+    for child in &tree.children {
+        collect_tree_keys(child, keys);
     }
-    lines
+}
+
+fn collect_activities(tree: &TreeNode, activities: &mut BTreeMap<NodeKey, Vec<String>>) {
+    if !tree.node.activities.is_empty() {
+        activities.insert(tree.key.clone(), tree.node.activities.clone());
+    }
+    for child in &tree.children {
+        collect_activities(child, activities);
+    }
+}
+
+fn count_node_download(node: &Node) -> usize {
+    usize::from(matches!(
+        node.detail,
+        Some(NixProgress::Counter {
+            unit: NixProgressUnit::Bytes | NixProgressUnit::Objects,
+            ..
+        })
+    ))
+}
+
+fn activity_message_level(activity: &str) -> MessageLevel {
+    let activity = activity.trim_start().to_ascii_lowercase();
+    if ["error:", "fatal:", "warning:", "warn:"]
+        .iter()
+        .any(|prefix| activity.starts_with(prefix))
+    {
+        MessageLevel::Failure
+    } else {
+        MessageLevel::Info
+    }
+}
+
+fn count_pin_downloads(pin: &Pin) -> usize {
+    count_node_download(&pin.node)
+        + pin
+            .sources
+            .values()
+            .map(|source| {
+                count_node_download(&source.node) + source.packages.values().map(count_node_download).sum::<usize>()
+            })
+            .sum::<usize>()
+        + pin.packages.values().map(count_node_download).sum::<usize>()
+}
+
+pub(crate) fn sanitize_activity(activity: &str) -> String {
+    static URL: OnceLock<regex::Regex> = OnceLock::new();
+    URL.get_or_init(|| {
+        regex::Regex::new(
+            r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?:[^/@\s]+@)?(?P<host>[^/?#\s]+)(?P<path>/[^?#\s]*)?(?:\?[^#\s]*)?(?:#[^\s]*)?",
+        )
+        .expect("固定 URL 正则必须有效")
+    })
+    .replace_all(activity, "$scheme$host$path")
+    .into_owned()
+}
+
+fn materialize_root(root: &Root, tree: &TreeNode, width: u16, items: &mut BTreeMap<NodeKey, Item>) {
+    let mut item = root.add_child("");
+    apply_node(&mut item, &tree.base, &tree.node, 0, width);
+    for child in &tree.children {
+        materialize_tree(&mut item, child, 1, width, items);
+    }
+    items.insert(tree.key.clone(), item);
 }
 
 fn materialize_tree(parent: &mut Item, tree: &TreeNode, level: usize, width: u16, items: &mut BTreeMap<NodeKey, Item>) {
@@ -992,8 +1222,9 @@ fn materialize_tree(parent: &mut Item, tree: &TreeNode, level: usize, width: u16
 
 fn apply_node(item: &mut Item, base: &str, node: &Node, level: usize, width: u16) {
     let counter = matches!(node.detail, Some(NixProgress::Counter { .. }));
+    let active = node.status == Status::Active && !counter;
     let available = usize::from(width).saturating_sub(level);
-    let reserve = if counter {
+    let reserve = if counter || active {
         available.saturating_sub(4).min(24)
     } else {
         0
@@ -1007,7 +1238,7 @@ fn apply_node(item: &mut Item, base: &str, node: &Node, level: usize, width: u16
             item.init(total.map(saturating_usize), Some(progress_unit(*unit)));
             item.set(saturating_usize(*current));
         }
-        _ if node.status == Status::Active => item.init(None, None),
+        _ if active => item.init(None, Some(unit::dynamic(SpinnerUnit))),
         _ => {}
     }
 }
@@ -1022,7 +1253,12 @@ fn progress_unit(unit: NixProgressUnit) -> unit::Unit {
 }
 
 fn format_node_text(base: &str, node: &Node, counter_values: Option<bool>) -> String {
-    let mut text = format!("{} {base}", node.status.symbol());
+    let symbol = node.status.symbol();
+    let mut text = if symbol.is_empty() {
+        base.to_owned()
+    } else {
+        format!("{symbol} {base}")
+    };
     if let Some(step) = &node.step {
         text.push_str(" · ");
         text.push_str(step);
@@ -1049,7 +1285,7 @@ fn format_node_text(base: &str, node: &Node, counter_values: Option<bool>) -> St
                 );
             }
         }
-        None => {}
+        Some(NixProgress::Status { .. }) | None => {}
     }
     text
 }
@@ -1170,7 +1406,7 @@ mod tests {
     }
 
     #[test]
-    fn height_budget_keeps_active_and_recent_successful_pins() {
+    fn small_terminal_snapshot_keeps_all_pins() {
         let (progress, output_buffer) = Progress::test_terminal((80, 12));
         progress.phase(Phase::CheckingVersions);
         let reporter = progress.reporter();
@@ -1187,10 +1423,11 @@ mod tests {
         assert_eq!(
             output(&output_buffer),
             concat!(
-                "Pin Progress · done · showing 3 of 4 pins\n",
+                "Pin Progress · done · 4 pins\n",
+                "├─ ✔ alpha v1\n",
                 "├─ ✔ beta v1\n",
                 "├─ ✔ gamma v1\n",
-                "└─ ⏵ omega v1 · Checking\n",
+                "└─ omega v1 · Checking\n",
             )
         );
     }
@@ -1239,6 +1476,21 @@ mod tests {
     }
 
     #[test]
+    fn last_source_finishes_pin_immediately() {
+        let (progress, _) = Progress::test_terminal((80, 24));
+        progress.phase(Phase::ResolvingDerivedHashes);
+        let reporter = progress.reporter();
+        reporter.declare("demo", Some("v1"));
+        reporter.sources("demo", vec!["api".into(), "web".into()]);
+
+        reporter.source_done("demo", "api");
+        assert_eq!(progress.state.lock().unwrap().pins["demo"].node.status, Status::Waiting);
+
+        reporter.source_done("demo", "web");
+        assert_eq!(progress.state.lock().unwrap().pins["demo"].node.status, Status::Success);
+    }
+
+    #[test]
     fn collapsed_package_failure_logs_full_pin_location_once() {
         let (progress, output_buffer) = Progress::test_non_terminal((80, 24));
         progress.phase(Phase::ResolvingDerivedHashes);
@@ -1267,7 +1519,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_height_uses_twenty_row_fallback() {
+    fn terminal_height_does_not_hide_pins() {
         let (progress, _) = Progress::test_terminal((80, 0));
         progress.phase(Phase::CheckingVersions);
         let reporter = progress.reporter();
@@ -1275,18 +1527,38 @@ mod tests {
             reporter.declare(&format!("pin-{index:02}"), None);
         }
 
-        assert_eq!(progress.state.lock().unwrap().visible_pin_names().len(), 19);
+        assert_eq!(progress.state.lock().unwrap().visible_pin_names().len(), 20);
     }
 
     #[test]
-    fn multi_source_subtree_is_pruned_as_a_whole() {
+    fn narrow_terminal_falls_back_to_plain() {
+        assert!(!tui_dimensions_supported((59, 20)));
+        assert!(!tui_dimensions_supported((80, 11)));
+        assert!(tui_dimensions_supported((60, 12)));
+    }
+
+    #[test]
+    fn cancellation_stops_a_running_child() {
+        let cancelled = AtomicBool::new(true);
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 5"]);
+
+        let started = std::time::Instant::now();
+        let output = command_output_with_cancel(&mut command, &cancelled).unwrap();
+
+        assert!(!output.status.success());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn multi_source_subtree_remains_visible() {
         let (progress, _) = Progress::test_terminal((80, 9));
         progress.phase(Phase::CheckingVersions);
         let reporter = progress.reporter();
         reporter.declare("demo", None);
         reporter.sources("demo", vec!["api".into(), "web".into()]);
 
-        assert!(progress.state.lock().unwrap().visible_pin_names().is_empty());
+        assert_eq!(progress.state.lock().unwrap().visible_pin_names(), vec!["demo"]);
     }
 
     #[test]
@@ -1337,5 +1609,102 @@ mod tests {
             snapshot.into_iter().map(|(key, _)| key).collect::<Vec<_>>()
         };
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn activities_use_feed_without_duplicate_tree_rows() {
+        let (progress, _) = Progress::test_terminal((80, 24));
+        progress.phase(Phase::CheckingVersions);
+        let reporter = progress.reporter();
+        reporter.declare("demo", Some("v1"));
+        reporter.detail(
+            "demo",
+            Some(NixProgress::Status {
+                detail: Some(Box::new(NixProgress::Text("Building".into()))),
+                activities: vec!["Building https://user:secret@example.com/src.tar?token=hidden · buildPhase".into()],
+            }),
+        );
+
+        let state = progress.state.lock().unwrap();
+        let pin_key = NodeKey::Pin("demo".into());
+        assert!(state.items[&pin_key].unit().is_some());
+        assert_eq!(state.items.len(), 1);
+        let mut messages = Vec::new();
+        state.root.copy_messages(&mut messages);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message, "Building https://example.com/src.tar · buildPhase");
+    }
+
+    #[test]
+    fn activity_urls_keep_only_scheme_host_and_path() {
+        assert_eq!(
+            sanitize_activity("ssh://alice:secret@example.com/repo.git?token=hidden https://bob@example.net/a#x"),
+            "ssh://example.com/repo.git https://example.net/a"
+        );
+    }
+
+    #[test]
+    fn diagnostics_keep_failure_severity_in_the_feed() {
+        let (progress, _) = Progress::test_terminal((80, 24));
+        progress.phase(Phase::CheckingVersions);
+        let reporter = progress.reporter();
+        reporter.declare("demo", None);
+        reporter.detail(
+            "demo",
+            Some(NixProgress::Status {
+                detail: None,
+                activities: vec!["warning: cache is stale".into()],
+            }),
+        );
+
+        let state = progress.state.lock().unwrap();
+        let mut messages = Vec::new();
+        state.root.copy_messages(&mut messages);
+        assert_eq!(messages[0].level, MessageLevel::Failure);
+    }
+
+    #[test]
+    fn information_summarizes_progress_and_active_nix_work() {
+        let (progress, _) = Progress::test_terminal((100, 30));
+        progress.phase(Phase::ResolvingSources);
+        let reporter = progress.reporter();
+        reporter.declare("done", None);
+        reporter.done("done", None);
+        reporter.declare("active", None);
+        reporter.detail(
+            "active",
+            Some(NixProgress::Status {
+                detail: Some(Box::new(NixProgress::Counter {
+                    current: 10,
+                    total: Some(20),
+                    unit: NixProgressUnit::Bytes,
+                    label: "Downloading".into(),
+                })),
+                activities: vec!["Building demo.drv".into(), "Querying Cache".into()],
+            }),
+        );
+        reporter.declare("git", None);
+        reporter.detail(
+            "git",
+            Some(NixProgress::Counter {
+                current: 2,
+                total: Some(4),
+                unit: NixProgressUnit::Objects,
+                label: "Git objects".into(),
+            }),
+        );
+
+        assert_eq!(
+            progress.state.lock().unwrap().information_lines(),
+            vec![
+                tui::Line::Title("Update".into()),
+                tui::Line::Text("Phase: Resolving sources".into()),
+                tui::Line::Text("Pins: 1/3 · 0 failed".into()),
+                tui::Line::Title("Nix".into()),
+                tui::Line::Text("Build 1 · Download 2 · Copy 0 · Query 1".into()),
+                tui::Line::Title("Keys".into()),
+                tui::Line::Text("j/k scroll · q/Esc/Ctrl+C cancel".into()),
+            ]
+        );
     }
 }

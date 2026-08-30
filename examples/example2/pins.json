@@ -2,25 +2,25 @@
   "schemaVersion": 2,
   "pins": {
     "cpa-manager-plus": {
-      "version": "v1.12.1",
+      "version": "v1.12.6",
       "sources": {
         "default": {
           "fetcher": {
             "github": {
               "owner": "seakee",
               "repo": "CPA-Manager-Plus",
-              "rev": "v1.12.1"
+              "rev": "v1.12.6"
             }
           },
-          "hash": "sha256-tq5F5NgKyahsYOmv5NDF1TMwc5OfTx18aCd2PyrvTNM=",
+          "hash": "sha256-vaL627hp24JnTpCKlfUSQmAEYFW7u+Z/9rrY919uw/E=",
           "derived": {
             "npmDepsHash": "sha256-JxY+dC/fpNpEe8lH2UwgjJbX6HVdgjaURvrQbxPfeDc=",
-            "vendorHash": "sha256-OhtGqAXPPbTIqGB9VvQ5UTgCNt7fw2yNKkEIgWhGuiM="
+            "vendorHash": "sha256-+KeivbPYmHJPbnCfjC0LWkK2gRikUXOI2HsqSd3kLpU="
           },
           "fingerprints": {
-            "hash": "/nix/store/qcvdnm6f3nikvdi618cwaspm0c2i99kr-source.drv",
-            "npmDepsHash": "/nix/store/b82c15xfknkkw0gq6b2m0rglchkz9878-cpa-manager-plus-web-v1.12.1-npm-deps.drv",
-            "vendorHash": "/nix/store/dwb01an9z9z1gvnkap5p5rbldib801h0-cpa-manager-plus-manager-server-v1.12.1-go-modules.drv"
+            "hash": "/nix/store/1qfcmd2g4xx6h6kczyyzkgqwvv16gvvz-source.drv",
+            "npmDepsHash": "/nix/store/2j3nyx845n9dq5qcvgin8gjlhf6lfm2l-cpa-manager-plus-web-v1.12.6-npm-deps.drv",
+            "vendorHash": "/nix/store/sn2j547w7gvl5pkrgk908ygc6ka503is-cpa-manager-plus-manager-server-v1.12.6-go-modules.drv"
           }
         }
       }

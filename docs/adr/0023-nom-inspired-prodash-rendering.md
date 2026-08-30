@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0024
 ---
 
 # 使用 prodash 实现 nom 风格的进度显示
