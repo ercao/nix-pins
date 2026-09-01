@@ -94,6 +94,16 @@ fn tui_dimensions_supported((width, height): (u16, u16)) -> bool {
     width >= 60 && height >= 12
 }
 
+fn tui_options() -> tui::Options {
+    tui::Options {
+        title: "Nix Pins".into(),
+        throughput: true,
+        recompute_column_width_every_nth_frame: Some(10),
+        stop_if_progress_missing: false,
+        ..Default::default()
+    }
+}
+
 struct EventStream {
     receiver: mpsc::Receiver<tui::Event>,
 }
@@ -119,13 +129,12 @@ struct TuiRenderer {
 impl TuiRenderer {
     fn start(root: &Arc<Root>) -> io::Result<Self> {
         let (events, receiver) = mpsc::channel();
-        let options = tui::Options {
-            title: "Nix Pins".into(),
-            throughput: true,
-            recompute_column_width_every_nth_frame: Some(10),
-            ..Default::default()
-        };
-        let render = tui::render_with_input(io::stderr(), Arc::downgrade(root), options, EventStream { receiver })?;
+        let render = tui::render_with_input(
+            io::stderr(),
+            Arc::downgrade(root),
+            tui_options(),
+            EventStream { receiver },
+        )?;
         let shutting_down = Arc::new(AtomicBool::new(false));
         let renderer_stopping = Arc::clone(&shutting_down);
         let handle = thread::spawn(move || {
@@ -1356,6 +1365,11 @@ mod tests {
 
     fn output(output: &Arc<Mutex<Vec<u8>>>) -> String {
         String::from_utf8(output.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn tui_waits_for_first_progress_item() {
+        assert!(!tui_options().stop_if_progress_missing);
     }
 
     #[test]
