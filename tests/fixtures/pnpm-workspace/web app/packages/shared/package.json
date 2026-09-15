@@ -1,0 +1,8 @@
+{
+  "name": "@nix-pins/shared",
+  "version": "1.0.0",
+  "main": "index.cjs",
+  "dependencies": {
+    "is-number": "7.0.0"
+  }
+}

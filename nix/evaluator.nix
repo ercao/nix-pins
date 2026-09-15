@@ -142,7 +142,7 @@
       _type = "git";
       args = convenienceArgs "pin.git" rawArgs;
     };
-    inherit (builders) goModule npmPackage;
+    inherit (builders) goModule npmPackage pnpmPackage;
   };
 
   configFunction = import config;
@@ -215,6 +215,18 @@
         };
       }
     else throw "nix-pins: pin '${pinName}' uses unsupported fetcher '${declaration._type or "unknown"}'";
+
+  # 配置中的 derivation 只求值 drvPath，避免递归强制其 passthru 中的整个包集合。
+  validateValue = value:
+    if builtins.isAttrs value
+    then
+      if value.type or null == "derivation"
+      then builtins.seq value.drvPath true
+      else builtins.all (name: validateValue value.${name}) (builtins.attrNames value)
+    else if builtins.isList value
+    then builtins.all validateValue value
+    else builtins.seq value true;
+
   evaluatePin = pinName: declaration: let
     normalized = normalizePin pinName declaration;
     check = evaluateChecker pinName normalized.checker;
@@ -223,7 +235,14 @@
       (sourceName: source:
         (fetchers.evaluate "${pinName}' source '${sourceName}" {version = "nix-pins-validation";} source.fetcher).fetcher)
       normalized.sources;
-    valid = builtins.deepSeq normalized.sources (builtins.deepSeq validationFetchers true);
+    validationPackages = builtins.mapAttrs
+      (sourceName: source:
+        builtins.mapAttrs
+        (packageName: declaration:
+          builders.validate "${pinName}' source '${sourceName}" packageName declaration)
+        source.packages)
+      normalized.sources;
+    valid = validateValue normalized.sources && builtins.deepSeq validationFetchers (builtins.deepSeq validationPackages true);
     lockedPin = pins.${pinName} or {};
     evaluateSource = sourceName: normalizedSource: let
       sourcePinName = "${pinName}' source '${sourceName}";

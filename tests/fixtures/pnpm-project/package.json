@@ -1,0 +1,11 @@
+{
+  "name": "nix-pins-pnpm-example",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "node build.cjs"
+  },
+  "dependencies": {
+    "is-number": "7.0.0"
+  }
+}

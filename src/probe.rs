@@ -271,6 +271,8 @@ in {{
         let packages = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/packages.nix");
         let config = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins-config.nix");
         let pins_file = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins.json");
+        let locked: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(pins_file).unwrap()).unwrap();
+        let version = locked["pins"]["cpa-manager-plus"]["version"].as_str().unwrap();
         let expr = format!(
             r#"let
   pkgs = import <nixpkgs> {{}};
@@ -296,8 +298,11 @@ in {{
         assert!(result["managerServer"]
             .as_str()
             .unwrap()
-            .contains("cpa-manager-plus-manager-server-v1.12.1"));
-        assert!(result["web"].as_str().unwrap().contains("cpa-manager-plus-web-v1.12.1"));
+            .contains(&format!("cpa-manager-plus-manager-server-{version}")));
+        assert!(result["web"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("cpa-manager-plus-web-{version}")));
         assert_eq!(result["pinHasNpmDeps"], false);
         assert_eq!(result["sourceHasGoModules"], false);
         assert_eq!(result["packageHasNpmDeps"], true);

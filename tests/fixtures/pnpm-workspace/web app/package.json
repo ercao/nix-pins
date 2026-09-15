@@ -1,0 +1,11 @@
+{
+  "name": "nix-pins-workspace-example",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "node build.cjs"
+  },
+  "dependencies": {
+    "@nix-pins/shared": "workspace:*"
+  }
+}
