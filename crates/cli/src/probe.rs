@@ -1,4 +1,4 @@
-//! 通过声明式 evaluator 对用户 Nix 配置进行两阶段求值（ADR-0015、ADR-0016）。
+//! 通过声明式 evaluator 对用户 Nix 配置进行两阶段求值（ADR-0016）。
 //!
 //! 阶段一以空锁定集只读 check；阶段二由工具注入版本和已知 source hash，
 //! 读取 Fetcher、source 与各中间 FOD 的 drvPath。
@@ -20,15 +20,16 @@ pub struct SourceProbeResult {
     #[serde(default)]
     pub patched: Option<String>,
     pub fetcher: Fetcher,
-    /// Derived Hash 名 → 承载它的 Intermediate FOD drvPath（ADR-0011）。
+    /// Derived Hash 名 → 承载它的 Intermediate FOD drvPath（ADR-0003）。
     #[serde(default)]
     pub derived: BTreeMap<String, String>,
-    /// Package 名 → Derived Hash 名 → Intermediate FOD drvPath（ADR-0020）。
+    /// Package 名 → Derived Hash 名 → Intermediate FOD drvPath（ADR-0003）。
     #[serde(default)]
     pub packages: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl SourceProbeResult {
+    /// 兼容只返回 derived 的旧 Probe，将其归属到 default Package 而不丢失哈希键。
     pub fn package_derived(&self) -> BTreeMap<String, BTreeMap<String, String>> {
         if self.packages.is_empty() && !self.derived.is_empty() {
             BTreeMap::from([("default".into(), self.derived.clone())])
@@ -75,6 +76,7 @@ pub fn probe_drvs(
             )
         })
         .collect::<BTreeMap<_, _>>();
+    // 内层 JSON 表示锁定数据，外层 JSON 编码为 Nix 字符串，避免版本值破坏表达式边界。
     let pins = serde_json::to_string(&pins)
         .and_then(|pins| serde_json::to_string(&pins))
         .map_err(|error| nix::Error::Nix(error.to_string()))?;
@@ -107,6 +109,7 @@ fn config_path(config: &str) -> Result<String, nix::Error> {
 }
 
 fn evaluator_path() -> Result<String, nix::Error> {
+    // 打包产物优先使用随包安装的 evaluator，开发环境回退到源码树。
     let source = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/evaluator.nix");
     let path = option_env!("NIX_PINS_EVALUATOR")
         .filter(|path| Path::new(path).is_file())

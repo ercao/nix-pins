@@ -1,7 +1,7 @@
 # nix-pins 声明式配置示例。
 { pin }:
 let
-  # npmDeps 要求源码树含 lockfile；sloc 的 tarball 不含，需单独取（ADR-0012）。
+  # npmDeps 要求源码树含 lockfile；sloc 的 tarball 不含，需单独取（ADR-0003）。
   slocLock = builtins.fetchurl {
     url = "https://raw.githubusercontent.com/flosse/sloc/e26044011821c4e170859362f2de657d64118711/package-lock.json";
     sha256 = "sha256-yWVErql5SWOSbbw2DZUlXBJp7zqZngkc8uAC5ZfnjX0=";

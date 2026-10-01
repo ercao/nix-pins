@@ -1,3 +1,4 @@
+# 每项刻意违反一条声明约束，测试按名称选取；这些错误不是待修复的示例配置。
 {pin}: {
   missing-owner = pin.github {
     repo = "demo";

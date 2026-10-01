@@ -1,3 +1,5 @@
+//! 用轻量 nixpkgs 替身验证便捷构造器的声明展开，不执行真实下载或依赖构建。
+
 use serde_json::{Value, json};
 use std::process::Command;
 

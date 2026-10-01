@@ -4,6 +4,7 @@
   cpa-manager-plus = pin.github {
     owner = "seakee";
     repo = "CPA-Manager-Plus";
+    # 两个 Package 共用源码版本，按各自的依赖根目录分别计算派生哈希。
     packages = {
       manager-server = pin.goModule {
         pname = "cpa-manager-plus-manager-server";

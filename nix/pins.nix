@@ -40,6 +40,7 @@
     })
     checked.pins;
   evaluated =
+    # 未传 config 时只还原锁定的原始源码；传入后才补充补丁源码和 Package。
     if config == null
     then {}
     else
@@ -55,6 +56,7 @@ in
       sources =
         builtins.mapAttrs
         (sourceName: source:
+          # 保留文件中的 Fetcher/哈希元数据，由配置求值结果覆盖 src 并追加 Package。
           source // (evaluated.${pinName}.sources.${sourceName} or {}))
         pin.sources;
     })

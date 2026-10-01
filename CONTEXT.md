@@ -17,7 +17,7 @@ Source 声明中 `packages` 下的一个具名构建产物。Package 共享所�
 _Avoid_：pin, source, output
 
 **Pin Progress**：
-交互式 Update 中以 Pin 为一级展示单元的处理状态，固定使用声明中的 Pin 名作为行名称，并显示当前锁定 Version、Checker 选出的目标 Version，以及 Checker 与整体提交状态。Fetcher target、URL、drvPath、Source 名与 Package 名都不替代 Pin 名。
+交互式 Update 中以 Pin 为一级展示单元的处理状态，使用声明中的 Pin 名，并表达当前锁定 Version、已选出的 Target Version 与整体处理结果。Fetcher target、URL、drvPath、Source 名与 Package 名都不替代 Pin 名。
 _Avoid_：source progress, download task, stage row
 
 **Source Progress**：
@@ -29,11 +29,11 @@ Source Progress 在 Derived Hash 工作期间显示的 Package 子节点。唯�
 _Avoid_：pin progress, package build result, inferred hash prefix
 
 **Pin Step**：
-由 nix-pins 定义的稳定、粗粒度 Pin Progress 状态：Checking、Version Selected、Hashing Source、Source Ready、Source Reused、Hashing Derived、Done 或 Failed。Hashing Derived 携带当前 Derived Hash 键并显示为 `Hashing <key>`，例如 `Hashing vendorHash`；该键属于 Pin Step，不属于 Nix 详情。Done 只表示该 Pin 的全部计算成功且结果已准备好，不表示已经写入 Pins File；持久化状态属于 Writing Pins File 这一 Global Operation。Nix `internal-json` activity、下载字节或 stdenv phase 只能作为当前 Pin Step 的详情，不能取代它或决定业务结果。
+由 nix-pins 定义的业务步骤，区分版本检查、源码及派生求值、补丁、Hash 计算和复用；Nix 活动仅补充详情，不决定业务结果。Done 表示计算结果已准备好，持久化仍属于 Writing Pins File 这一 Global Operation。
 _Avoid_：nix activity, build phase, global stage
 
 **Global Operation**：
-Update 中同时影响多个 Pin、无法诚实归属于单个 Pin 的短暂操作，例如批量 Probe 求值或写入 Pins File。交互式终端最多使用一条独立状态行显示它，不把它复制成每个 Pin 的处理步骤。
+Update 中同时影响多个 Pin、无法归属于单个 Pin 的操作，例如配置加载、版本检查、整体处理或写入 Pins File；不把它复制成每个 Pin 的处理步骤。
 _Avoid_：pin step, global stage progress, duplicated status
 
 **Version**：
@@ -45,7 +45,7 @@ Update 事务开始时 Pins File 中记录的 Pin Version；尚未锁定的 Pin 
 _Avoid_：installed version, old version
 
 **Target Version**：
-本次 Update 中 Checker 为 Pin 选出的 Version。它是后续 Fetcher 与 Hash 计算的候选输入，不表示已经成功写入 Pins File；Checker 尚未完成或失败时，在 Pin Progress 中显示为 `…`。
+本次 Update 中 Checker 为 Pin 选出的 Version；Checker 尚未完成时没有 Target Version。它是后续 Fetcher 与 Hash 计算的候选输入，不表示已经成功写入 Pins File。
 _Avoid_：upgrade version, committed version, new version
 
 **Checker**：
@@ -93,7 +93,7 @@ _Avoid_：scope, targets, matcher
 _Avoid_：generated.nix, bridge, shim
 
 **Vendor Inputs Fingerprint**：
-影响某个 Derived Hash 的全部输入（src hash 与白名单构建参数）的哈希，用于判定该 Derived Hash 是否需要重算。
+带固定 Fake Hash 的 Intermediate FOD 的 drvPath，用于判定某个 Derived Hash 是否需要重算；它由 Nix 的真实构建输入决定。
 _Avoid_：cache key, hash of hashes, revision key
 
 **Intermediate FOD**：
