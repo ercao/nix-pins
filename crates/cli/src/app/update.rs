@@ -92,8 +92,11 @@ fn update(
     let processed = selected.len();
     progress.phase(progress::Phase::CheckingVersions);
     let reporter = progress.reporter();
-    for name in selected.keys() {
+    for (name, checker) in &selected {
         reporter.declare(name, pins.pins.get(name).map(|pin| pin.version.as_str()));
+        if checker.uses_revision_display() {
+            reporter.revision(name);
+        }
     }
 
     let mut versions = BTreeMap::new();

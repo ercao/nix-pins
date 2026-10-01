@@ -194,7 +194,7 @@ impl TreeNode {
     }
 }
 
-/// 应用状态是显示事实来源，Prodash 节点由它派生。
+/// 应用状态是显示事实来源，Prodash 节点和 Ratatui 快照都由它派生。
 pub(super) struct State {
     pub(super) root: Arc<Root>,
     pub(super) output: SharedWriter,

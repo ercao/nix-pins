@@ -1,4 +1,4 @@
-//! 上游版本检查。内置常用 Checker，外部命令保留为 Escape Hatch（ADR-0001）。
+//! 上游版本检查。内置常用 Checker，外部命令保留为 Escape Hatch（ADR-0016）。
 
 use regex::Regex;
 use reqwest::blocking::Client;
@@ -20,6 +20,14 @@ pub enum Checker {
     Pypi(String),
     Npm(NpmChecker),
     Url(UrlChecker),
+}
+
+impl Checker {
+    /// 只决定界面是否缩写提交号，不改变 Checker 返回值或写入文件的完整版本。
+    pub fn uses_revision_display(&self) -> bool {
+        matches!(self, Self::Cmd(_) | Self::Url(_) | Self::Git(GitChecker::Url(_)))
+            || matches!(self, Self::Git(GitChecker::Options(options)) if !matches!(options.mode, GitMode::Tag))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -118,6 +126,7 @@ pub fn check(checker: &Checker, options: &Options) -> Result<String, String> {
     }
 }
 
+/// Shell Checker 的 stdout 必须只有一行非空版本，避免把诊断输出误当成版本。
 fn command_version(shell_command: &str) -> Result<String, String> {
     let mut command = Command::new("sh");
     command.args(["-c", shell_command]);
@@ -207,6 +216,7 @@ fn git_version(config: &GitChecker) -> Result<String, String> {
     }
 }
 
+/// 注解标签优先取剥离后的提交号；关闭交互提示以免无人值守任务等待凭证输入。
 fn git_remote_version(url: &str, reference: &str) -> Result<String, String> {
     let peeled = format!("{reference}^{{}}");
     let mut command = Command::new("git");
@@ -282,6 +292,7 @@ fn default_dist_tag() -> String {
     "latest".into()
 }
 
+/// 有捕获组时取第一组，否则使用整个匹配；匹配成功仍必须得到非空版本。
 fn url_version(url: &str, pattern: &str, options: &Options) -> Result<String, String> {
     let body = send_with_retry(|| options.client.get(url))?
         .error_for_status()
@@ -310,6 +321,7 @@ fn get_json(client: &Client, url: &str) -> Result<Value, String> {
         .map_err(|error| error.to_string())
 }
 
+/// 仅重试暂时性状态和连接/超时错误；耗尽重试时保留已有 HTTP 响应供调用方解释。
 fn send_with_retry<F>(mut request: F) -> Result<reqwest::blocking::Response, String>
 where
     F: FnMut() -> reqwest::blocking::RequestBuilder,
@@ -356,6 +368,7 @@ fn retry_after(response: &reqwest::blocking::Response) -> Option<Duration> {
         .map(|seconds| Duration::from_secs(seconds.min(30)))
 }
 
+/// 两边都能解析时按 SemVer 排序，否则退回字符串顺序，保留非 SemVer 标签的支持。
 fn compare_tags(left: &str, right: &str) -> Ordering {
     match (
         Version::parse(left.trim_start_matches('v')),
@@ -379,6 +392,32 @@ mod tests {
     use super::{Checker, compare_tags};
     use serde_json::json;
     use std::cmp::Ordering;
+
+    #[test]
+    fn revision_display_follows_checker_mode() {
+        for (declaration, expected) in [
+            (serde_json::json!({"git": "https://example.invalid/repo"}), true),
+            (
+                serde_json::json!({"git": {"url": "https://example.invalid/repo", "mode": "tag"}}),
+                false,
+            ),
+            (
+                serde_json::json!({"git": {"url": "https://example.invalid/repo", "mode": "branch", "branch": "main"}}),
+                true,
+            ),
+            (
+                serde_json::json!({"git": {"url": "https://example.invalid/repo", "mode": "ref", "ref": "refs/tags/v1"}}),
+                true,
+            ),
+            (
+                serde_json::json!({"cmd": "printf abcdefabcdefabcdefabcdefabcdefabcdefabcd"}),
+                true,
+            ),
+        ] {
+            let checker: super::Checker = serde_json::from_value(declaration).unwrap();
+            assert_eq!(checker.uses_revision_display(), expected);
+        }
+    }
 
     struct GitFixture {
         path: std::path::PathBuf,
