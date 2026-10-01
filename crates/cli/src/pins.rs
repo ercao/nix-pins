@@ -1,10 +1,12 @@
-//! Pins File 的读写。公共 schema，与 pins.nix reader 同步演进（ADR-0002、ADR-0006）。
+//! Pins File 的读写。公共 schema，与 nix/pins.nix reader 同步演进（ADR-0002）。
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: u32 = 2;
@@ -15,11 +17,12 @@ pub struct PinsFile {
     pub schema_version: u32,
     /// BTreeMap 保证输出键序稳定，使 diff 可读。
     pub pins: BTreeMap<String, Pin>,
-    /// 上一轮更新的失败项。Pin 条目本身仍保持可构建的旧内容（ADR-0007）。
+    /// 上一轮更新的失败项。Pin 条目本身仍保持可构建的旧内容（ADR-0002）。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub failures: BTreeMap<String, String>,
 }
 
+/// 生命周期覆盖读取、更新和原子保存，持有独立锁文件以免 rename 替换目标后失去互斥。
 pub struct Transaction {
     path: PathBuf,
     lock: File,
@@ -37,15 +40,15 @@ pub struct Pin {
 pub struct Source {
     pub fetcher: Fetcher,
     pub hash: String,
-    /// 未使用的能力整个键缺失，而非为 null（ADR-0006）。
+    /// 未使用的能力整个键缺失，而非为 null（ADR-0002）。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub derived: BTreeMap<String, String>,
-    /// 带假哈希的中间 FOD drvPath，用作重算判据（ADR-0014）。
+    /// 带假哈希的中间 FOD drvPath，用作重算判据（ADR-0003）。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fingerprints: BTreeMap<String, String>,
 }
 
-/// 带标签的 fetcher，每种只出现自身字段（ADR-0006）。
+/// 带标签的 fetcher，每种只出现自身字段（ADR-0002）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Fetcher {
@@ -72,7 +75,7 @@ impl PinsFile {
     pub fn load(path: &Path) -> std::io::Result<Self> {
         match std::fs::read(path) {
             Ok(bytes) => Self::from_bytes(&bytes),
-            // 首轮运行：文件不存在等价于空集，阶段一无需它（ADR-0015）。
+            // 首轮运行：文件不存在等价于空集，阶段一无需它（ADR-0016）。
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self {
                 schema_version: SCHEMA_VERSION,
                 pins: BTreeMap::new(),
@@ -82,9 +85,16 @@ impl PinsFile {
         }
     }
 
+    /// 先取得目标路径对应的独占锁，再读取快照；错误返回时文件句柄自动释放锁。
     pub fn transaction(path: &Path) -> std::io::Result<Transaction> {
-        let lock_path = lock_path(path);
-        let lock = OpenOptions::new().create(true).read(true).write(true).open(lock_path)?;
+        let lock_path = lock_path(path)?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(lock_path)?;
         lock.lock_exclusive()?;
         let original = match std::fs::read(path) {
             Ok(bytes) => Some(bytes),
@@ -134,6 +144,7 @@ impl PinsFile {
 }
 
 impl Transaction {
+    /// 内容未变时保留 mtime；在同目录写完临时文件后 rename，读者只能看到完整 JSON。
     pub fn save(&mut self) -> std::io::Result<()> {
         let bytes = self.pins.to_bytes()?;
         if self.original.as_deref() == Some(bytes.as_slice()) {
@@ -163,9 +174,40 @@ impl Drop for Transaction {
     }
 }
 
-fn lock_path(path: &Path) -> PathBuf {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    path.with_file_name(format!("{name}.lock"))
+fn lock_path(path: &Path) -> std::io::Result<PathBuf> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Pins file path has no file name"))?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    // 只规范化父目录，首次创建和原子替换后仍使用同一把锁。
+    let target = std::fs::canonicalize(parent)?.join(name);
+    // 固定 FNV-1a 算法，避免不同 Rust 版本改变路径到锁名的映射。
+    let hash = target
+        .as_os_str()
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+
+    let uid = unsafe { libc::geteuid() };
+    let directory = PathBuf::from(format!("/tmp/nix-pins-locks-{uid}"));
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&directory)?;
+    let metadata = std::fs::symlink_metadata(&directory)?;
+    if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "lock directory must be private and owned by the current user",
+        ));
+    }
+    // 锁文件不可在释放锁时删除，否则等待中的进程可能锁住不同 inode。
+    Ok(directory.join(format!("{hash:016x}.lock")))
 }
 
 fn temporary_path(path: &Path) -> PathBuf {
@@ -209,7 +251,7 @@ mod tests {
         }
     }
 
-    /// 空 derived 不得序列化为 null 或空对象（ADR-0006）。
+    /// 空 derived 不得序列化为 null 或空对象（ADR-0002）。
     #[test]
     fn omits_empty_capabilities() {
         let s = serde_json::to_string(&sample()).unwrap();
@@ -240,21 +282,34 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("pins.json");
+        let lock = lock_path(&path).unwrap();
+        assert!(lock.starts_with(format!("/tmp/nix-pins-locks-{}", unsafe { libc::geteuid() })));
+        assert_eq!(lock, lock_path(&root.join("./pins.json")).unwrap());
+        assert_ne!(lock, lock_path(&root.join("other.json")).unwrap());
+        std::fs::create_dir(root.join("other")).unwrap();
+        assert_ne!(lock, lock_path(&root.join("other/pins.json")).unwrap());
+        std::os::unix::fs::symlink(&root, root.join("alias")).unwrap();
+        let alias = root.join("alias/pins.json");
+        assert_eq!(lock, lock_path(&alias).unwrap());
 
         let mut first = PinsFile::transaction(&path).unwrap();
+        assert!(!path.with_file_name("pins.json.lock").exists());
         first.pins = sample();
         first.save().unwrap();
+        assert_eq!(lock, lock_path(&path).unwrap());
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
 
         let competing = OpenOptions::new()
             .read(true)
             .write(true)
-            .open(lock_path(&path))
+            .open(lock_path(&alias).unwrap())
             .unwrap();
         assert!(competing.try_lock_exclusive().is_err());
         drop(first);
+        assert!(lock.is_file());
         competing.try_lock_exclusive().unwrap();
         FileExt::unlock(&competing).unwrap();
+        drop(competing);
 
         std::thread::sleep(std::time::Duration::from_millis(20));
         let mut unchanged = PinsFile::transaction(&path).unwrap();
@@ -264,6 +319,7 @@ mod tests {
         let loaded = PinsFile::load(&path).unwrap();
         assert_eq!(loaded.pins["curlie"].version, "v1.8.2");
 
+        std::fs::remove_file(lock).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
