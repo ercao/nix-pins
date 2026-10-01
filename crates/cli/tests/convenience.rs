@@ -16,7 +16,7 @@ fn eval(expr: &str) -> Result<Value, String> {
 
 #[test]
 fn convenience_pin_constructors_accept_string_targets() {
-    let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+    let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/evaluator.nix");
     let expr = format!(
         r#"let
           pkgs = {{
@@ -110,7 +110,7 @@ fn convenience_pin_constructors_accept_string_targets() {
 
 #[test]
 fn pin_git_rejects_url_as_a_target_alias() {
-    let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+    let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/evaluator.nix");
     let expr = format!(
         r#"let
           pkgs.lib.fakeHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -129,7 +129,7 @@ fn pin_git_rejects_url_as_a_target_alias() {
 
 #[test]
 fn convenience_pin_constructors_reject_other_input_types() {
-    let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+    let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/evaluator.nix");
 
     for constructor in ["github", "git"] {
         let expr = format!(

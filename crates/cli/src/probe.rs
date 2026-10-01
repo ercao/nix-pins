@@ -107,7 +107,7 @@ fn config_path(config: &str) -> Result<String, nix::Error> {
 }
 
 fn evaluator_path() -> Result<String, nix::Error> {
-    let source = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+    let source = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/evaluator.nix");
     let path = option_env!("NIX_PINS_EVALUATOR")
         .filter(|path| Path::new(path).is_file())
         .unwrap_or(source);
@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn probes_real_github_go_and_npm_derivations() {
         let versions = BTreeMap::from([("curlie".into(), "v1.8.2".into()), ("sloc".into(), "0.3.2".into())]);
-        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example1/pins-config.nix");
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/example1/pins-config.nix");
 
         let results = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
 
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn declarative_github_go_pin_evaluates_through_the_public_nix_seam() {
-        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/evaluator.nix");
         let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/declarative-go.nix");
         let expr = format!(
             r#"let
@@ -213,7 +213,7 @@ mod tests {
                 "sha256-tq5F5NgKyahsYOmv5NDF1TMwc5OfTx18aCd2PyrvTNM=".into(),
             )]),
         )]);
-        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins-config.nix");
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/example2/pins-config.nix");
 
         let fake_source = probe_drvs(config, &versions, &BTreeMap::new()).unwrap();
         let locked_source = probe_drvs(config, &versions, &hashes).unwrap();
@@ -236,8 +236,8 @@ mod tests {
 
     #[test]
     fn locked_evaluator_exposes_named_go_and_npm_packages() {
-        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
-        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins-config.nix");
+        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/evaluator.nix");
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/example2/pins-config.nix");
         let expr = format!(
             r#"let
   pkgs = import <nixpkgs> {{}};
@@ -268,9 +268,9 @@ in {{
 
     #[test]
     fn pins_file_entry_exposes_named_packages() {
-        let packages = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/packages.nix");
-        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins-config.nix");
-        let pins_file = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/example2/pins.json");
+        let packages = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/packages.nix");
+        let config = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/example2/pins-config.nix");
+        let pins_file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/example2/pins.json");
         let locked: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(pins_file).unwrap()).unwrap();
         let version = locked["pins"]["cpa-manager-plus"]["version"].as_str().unwrap();
         let expr = format!(
@@ -311,7 +311,7 @@ in {{
 
     #[test]
     fn declarative_errors_name_the_pin_and_package() {
-        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/evaluator.nix");
         let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/invalid-declarations.nix");
         let cases = [
             ("cfg.missing-owner.check", ["pin 'missing-owner'", "field 'owner'"]),
@@ -485,7 +485,7 @@ in {selection}"#
 
     #[test]
     fn multiple_same_type_packages_get_stable_derived_hash_names() {
-        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/evaluator.nix");
         let config = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/declarative-multi-go.nix");
         let expr = format!(
             r#"let
@@ -534,7 +534,7 @@ in {{
 
     #[test]
     fn checker_and_fetcher_are_orthogonal_through_the_public_nix_seam() {
-        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/nix/evaluator.nix");
+        let evaluator = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/evaluator.nix");
         let expr = format!(
             r#"let
   pkgs = {{

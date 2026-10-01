@@ -2,7 +2,7 @@
 # 传入 config 时，各 Source 额外暴露补丁后的 src、Package 与 Intermediate FOD。
 {
   pkgs,
-  file ? ./pins.json,
+  file ? ../pins.json,
   config ? null,
 }: let
   data = builtins.fromJSON (builtins.readFile file);
@@ -43,7 +43,7 @@
     if config == null
     then {}
     else
-      import ./nix/packages.nix {
+      import ./packages.nix {
         inherit pkgs config;
         pinsFile = file;
       };

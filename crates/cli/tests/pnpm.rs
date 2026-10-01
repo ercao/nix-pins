@@ -35,7 +35,7 @@ impl Project {
     }
 
     fn read(&self, expression: &str) -> Value {
-        let reader = concat!(env!("CARGO_MANIFEST_DIR"), "/pins.nix");
+        let reader = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/pins.nix");
         let expression = format!(
             "let pkgs = import <nixpkgs> {{}}; pins = import {reader} {{ inherit pkgs; config = {}/pins-config.nix; file = {}/pins.json; }}; source = pins.demo.sources.default; in {expression}",
             self.0.display(), self.0.display()
@@ -97,7 +97,7 @@ impl Project {
     }
 
     fn build(&self, root: &str) -> PathBuf {
-        let reader = concat!(env!("CARGO_MANIFEST_DIR"), "/pins.nix");
+        let reader = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/pins.nix");
         let expression = format!(
             r#"let
   pkgs = import <nixpkgs> {{}};

@@ -169,7 +169,7 @@ fn schema_v1_is_rejected_by_the_cli_and_public_reader() {
     assert_eq!(status.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&status.stderr).contains("unsupported Pins File schemaVersion 1; expected 2"));
 
-    let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("pins.nix");
+    let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nix/pins.nix");
     let pins_path = dir.0.join("pins.json");
     let expression = format!(
         r#"let
@@ -268,7 +268,7 @@ esac
     );
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let reader = root.join("pins.nix");
+    let reader = root.join("../../nix/pins.nix");
     let config = root.join("tests/fixtures/multi-source.nix");
     let pins_path = dir.0.join("pins.json");
     let expression = format!(
@@ -1056,7 +1056,7 @@ fn reader_dispatches_all_fetchers() {
     )
     .unwrap();
 
-    let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("pins.nix");
+    let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nix/pins.nix");
     let expression = format!(
         r#"let
           pins = import {reader} {{
