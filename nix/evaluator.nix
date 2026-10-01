@@ -1,3 +1,4 @@
+# 将声明式配置统一为 Pin/Source/Package；check 与 sources 分开求值，支持空锁定集的首轮检查。
 {
   pkgs,
   config,
@@ -65,7 +66,7 @@
     kind = declaration._type or "unknown";
     rawArgs = declaration.args or {};
     compact = attrs:
-      builtins.removeAttrs attrs (builtins.filter (name: attrs.${name} == null) (builtins.attrNames attrs));
+      removeAttrs attrs (builtins.filter (name: attrs.${name} == null) (builtins.attrNames attrs));
   in
     if kind == "cmd"
     then let
@@ -150,6 +151,7 @@
     inherit pin pkgs;
     lib = pkgs.lib;
   };
+  # 只传配置显式声明的参数，保持 { pin }: ... 等窄签名可用。
   declarations = configFunction (builtins.intersectAttrs (builtins.functionArgs configFunction) configArguments);
 
   normalizeSource = pinName: sourceName: declaration: let
@@ -165,6 +167,7 @@
     packages = args.packages or {};
   };
   normalizeSources = pinName: args:
+    # 显式 sources 优先于顶层单 Source 简写，所有后续处理只面对统一结构。
     if args ? sources
     then
       if !builtins.isAttrs args.sources
@@ -173,7 +176,7 @@
       then throw "nix-pins: pin '${pinName}' pin.mk field 'sources' must not be empty"
       else builtins.mapAttrs (normalizeSource pinName) args.sources
     else {
-      default = normalizeSource pinName "default" (builtins.removeAttrs args ["checker" "sources"]);
+      default = normalizeSource pinName "default" (removeAttrs args ["checker" "sources"]);
     };
   normalizePin = pinName: declaration:
     if declaration._type or null == "pin"
@@ -188,7 +191,7 @@
       args = validateFields pinName "pin.github" ["target" "owner" "repo" "rev" "fetcherArgs" "patches" "postPatch" "packages"] declaration.args;
       target = targets.github pinName "pin.github" args;
       checkerArgs = target;
-      fetcherArgs = builtins.removeAttrs args ["target" "owner" "repo" "patches" "postPatch" "packages"] // target;
+      fetcherArgs = removeAttrs args ["target" "owner" "repo" "patches" "postPatch" "packages"] // target;
     in {
       checker = checker.github checkerArgs;
       sources.default = {
@@ -202,8 +205,8 @@
     then let
       args = validateFields pinName "pin.git" ["target" "mode" "branch" "ref" "include" "exclude" "sort" "rev" "fetcherArgs" "patches" "postPatch" "packages"] declaration.args;
       target = required pinName "pin.git" "target" args;
-      checkerArgs = builtins.removeAttrs args ["rev" "fetcherArgs" "patches" "postPatch" "packages"];
-      fetcherArgs = builtins.removeAttrs args ["mode" "branch" "ref" "include" "exclude" "sort" "patches" "postPatch" "packages"];
+      checkerArgs = removeAttrs args ["rev" "fetcherArgs" "patches" "postPatch" "packages"];
+      fetcherArgs = removeAttrs args ["mode" "branch" "ref" "include" "exclude" "sort" "patches" "postPatch" "packages"];
     in
       assert builtins.isString target || throw "nix-pins: pin '${pinName}' pin.git field 'target' must be a string"; {
         checker = checker.git checkerArgs;
@@ -235,13 +238,15 @@
       (sourceName: source:
         (fetchers.evaluate "${pinName}' source '${sourceName}" {version = "nix-pins-validation";} source.fetcher).fetcher)
       normalized.sources;
-    validationPackages = builtins.mapAttrs
+    validationPackages =
+      builtins.mapAttrs
       (sourceName: source:
         builtins.mapAttrs
         (packageName: declaration:
           builders.validate "${pinName}' source '${sourceName}" packageName declaration)
         source.packages)
       normalized.sources;
+    # 在读取 check 时强制验证声明，配置错误应先于 Checker 和真实下载被报告。
     valid = validateValue normalized.sources && builtins.deepSeq validationFetchers (builtins.deepSeq validationPackages true);
     lockedPin = pins.${pinName} or {};
     evaluateSource = sourceName: normalizedSource: let
@@ -269,6 +274,7 @@
         base = baseHashName packageName;
         sameType = builtins.filter (name: baseHashName name == base) packageNames;
       in
+        # 同一 Source 下多个同类 Package 必须带名称前缀，避免派生哈希互相覆盖。
         if builtins.length sameType == 1
         then base
         else "${packageName}.${base}";
@@ -287,6 +293,7 @@
         packageNames;
     in {
       inherit (fetched) fetcher;
+      # 源码哈希针对原始 Fetcher；补丁后的 src 仅供 Package 和补丁实现阶段使用。
       fetchSrc = fetched.src;
       inherit src derived packageDerived packages;
     };

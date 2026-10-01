@@ -1,3 +1,4 @@
+# 以 Pins File 中的真实版本和哈希重建配置，只向 Reader 暴露补丁源码与 Package。
 {
   pkgs,
   config,

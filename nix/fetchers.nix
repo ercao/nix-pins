@@ -1,3 +1,4 @@
+# 将版本映射为可序列化的 Fetcher 参数，并在缺少锁定哈希时构造占位哈希 FOD。
 {
   pkgs,
   fake,
@@ -18,6 +19,7 @@
     then attrs
     else throw "nix-pins: pin '${pinName}' ${context} has unknown field '${builtins.head unknown}'";
 
+  # 扩展参数不能覆盖版本映射或哈希字段，保证 Probe 与 Reader 使用相同输入。
   validateFetcherArgs = pinName: context: reserved: args: let
     fetcherArgs = args.fetcherArgs or {};
     reservedAttrs = builtins.listToAttrs (map (name: {
@@ -107,6 +109,7 @@
       assert validArgs; {inherit kind args url;}
     else throw "nix-pins: pin '${pinName}' uses unsupported Fetcher '${kind}'";
 
+  # mapper 的返回类型只有在注入版本后才能验证，不能只检查它是否为函数。
   mappedString = pinName: context: field: mapper: version: let
     value = mapper version;
   in

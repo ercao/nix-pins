@@ -1,3 +1,4 @@
+# 统一 target 简写与旧字段，显式拒绝混用，避免 Checker 和 Fetcher 各取不同值。
 {required}: {
   field = pinName: context: legacyField: args:
     if args ? target && builtins.hasAttr legacyField args

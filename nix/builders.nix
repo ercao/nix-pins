@@ -1,3 +1,4 @@
+# 将 Package 声明接到 nixpkgs builder，暴露依赖 FOD 而不构建最终应用。
 {
   pkgs,
   fake,
@@ -19,6 +20,7 @@
     then "pnpmDepsHash"
     else throw "nix-pins: pin '${pinName}' package '${packageName}' uses unsupported builder '${declaration._type or "unknown"}'";
 
+  # 依赖哈希来自 builder 暴露的中间 FOD，不从最终应用的构建日志猜测。
   intermediateName = pinName: packageName: declaration:
     if declaration._type or null == "goModule"
     then "goModules"
@@ -45,6 +47,7 @@ in {
 
   inherit hashName intermediateName;
 
+  # pnpm 当前锁定整个声明的 workspace，提前拒绝会改变依赖集合的过滤参数。
   validate = pinName: packageName: declaration:
     if declaration._type or null == "pnpmPackage"
     then let
@@ -57,13 +60,13 @@ in {
         || pkgs.lib.hasPrefix "-F" flag;
     in
       assert builtins.isString root && root != ""
-        || throw "nix-pins: pin '${pinName}' package '${packageName}' 的 'root' 必须为非空字符串";
+        || throw "nix-pins: pin '${pinName}' package '${packageName}' requires 'root' to be a nonempty string";
       assert builtins.isInt fetcherVersion && fetcherVersion > 0
-        || throw "nix-pins: pin '${pinName}' package '${packageName}' 的 'fetcherVersion' 必须为正整数";
+        || throw "nix-pins: pin '${pinName}' package '${packageName}' requires 'fetcherVersion' to be a positive integer";
       assert (declaration.args.pnpmWorkspaces or []) == []
-        || throw "nix-pins: pin '${pinName}' package '${packageName}' 暂不支持通过 'pnpmWorkspaces' 过滤子包";
+        || throw "nix-pins: pin '${pinName}' package '${packageName}' does not support filtering packages with 'pnpmWorkspaces'";
       assert !(builtins.any filtersWorkspace (declaration.args.pnpmInstallFlags or []))
-        || throw "nix-pins: pin '${pinName}' package '${packageName}' 暂不支持在 'pnpmInstallFlags' 中过滤 workspace 子包";
+        || throw "nix-pins: pin '${pinName}' package '${packageName}' does not support workspace filtering in 'pnpmInstallFlags'";
       true
     else true;
 
@@ -79,6 +82,7 @@ in {
       }
       // removeAttrs args ["root"];
     lockedDerived = locked.derived or {};
+    # 首轮 Probe 使用固定占位哈希；Reader 则注入已经解析出的真实哈希。
     hash = lockedDerived.${hashName} or fake;
     version = lockedVersion pinName locked;
   in
@@ -111,6 +115,7 @@ in {
           '';
         });
     in
+      # fetchPnpmDeps 自身就是依赖 FOD；补齐统一的 pnpmDeps 访问入口。
       pnpmDeps // {inherit pnpmDeps;}
     else throw "nix-pins: pin '${pinName}' package '${packageName}' uses unsupported builder '${declaration._type or "unknown"}'";
 

@@ -1,3 +1,5 @@
+//! 通过真实 Nix 求值核对 pnpm 声明与 Reader；需要工具链和依赖下载的构建用例显式忽略。
+
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,6 +59,7 @@ impl Project {
             .unwrap()
     }
 
+    /// 把本地源码归档放入 Store，经正式 URL Fetcher 与 root/postPatch 链路参与更新。
     fn use_source(&self, source: &Path, root: &str, post_patch: &str) {
         let archive = self.0.join("source.tar.gz");
         let output = Command::new("tar")
@@ -97,6 +100,7 @@ impl Project {
         .unwrap();
     }
 
+    /// 消费 Reader 暴露的 pnpmDeps 构建小应用，验证锁定依赖能在构建阶段离线使用。
     fn build(&self, root: &str) -> PathBuf {
         let reader = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/pins.nix");
         let expression = format!(
@@ -187,7 +191,10 @@ fn invalid_pnpm_fields_are_configuration_errors_before_any_update() {
             .output()
             .unwrap();
         let error = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "无效 {field} 时必须拒绝配置");
+        assert!(
+            !output.status.success(),
+            "invalid {field} must reject the configuration"
+        );
         assert!(
             error.contains("demo") && error.contains("web") && error.contains(field),
             "{error}"
@@ -240,7 +247,7 @@ in {
 }
 
 #[test]
-#[ignore = "需要 Nix 构建工具链和注册表依赖下载"]
+#[ignore = "Requires Nix build tools and registry dependency downloads"]
 fn update_produces_dependencies_for_a_real_offline_build() {
     let project = Project::new("{ pin }: {}");
     project.use_source(
@@ -261,7 +268,7 @@ fn update_produces_dependencies_for_a_real_offline_build() {
 }
 
 #[test]
-#[ignore = "需要 Nix 构建工具链和注册表依赖下载"]
+#[ignore = "Requires Nix build tools and registry dependency downloads"]
 fn patched_workspace_in_a_subdirectory_builds_offline() {
     let project = Project::new("{ pin }: {}");
     project.use_source(
@@ -280,7 +287,7 @@ fn patched_workspace_in_a_subdirectory_builds_offline() {
 }
 
 #[test]
-#[ignore = "需要 Nix 构建工具链和注册表依赖下载"]
+#[ignore = "Requires Nix build tools and registry dependency downloads"]
 fn pnpm_updates_reuse_inputs_and_preserve_failed_pins() {
     let project = Project::new("{ pin }: {}");
     project.use_source(
