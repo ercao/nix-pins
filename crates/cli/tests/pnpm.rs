@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -38,7 +38,8 @@ impl Project {
         let reader = concat!(env!("CARGO_MANIFEST_DIR"), "/../../nix/pins.nix");
         let expression = format!(
             "let pkgs = import <nixpkgs> {{}}; pins = import {reader} {{ inherit pkgs; config = {}/pins-config.nix; file = {}/pins.json; }}; source = pins.demo.sources.default; in {expression}",
-            self.0.display(), self.0.display()
+            self.0.display(),
+            self.0.display()
         );
         let output = Command::new("nix")
             .args(["eval", "--impure", "--json", "--expr", &expression])

@@ -1,18 +1,24 @@
 //! 与 Nix 的全部交互。工具唯一一条取哈希的代码路径。
 
+mod log;
+
+use log::*;
+pub(crate) use log::{activity_message_level, activity_summary, sanitize_activity, terminal_text};
+use prodash::messages::MessageLevel;
 use std::process::Command;
 
-/// 注入配置的固定占位哈希。必须固定：变动会改变中间 FOD 的 drvPath（ADR-0014）。
+/// 注入配置的固定占位哈希。必须固定：变动会改变中间 FOD 的 drvPath（ADR-0003）。
 pub const FAKE: &str = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 #[derive(Debug)]
 pub enum Error {
     /// 构建在到达哈希比对之前失败（缺 lockfile、404 等）。原样保留输出，不猜测
-    /// （ADR-0003、ADR-0012）。
+    /// （ADR-0003）。
     NoGotLine(String),
     Nix(String),
 }
 
+/// Nix 日志的显示事件；未知总量保留为 None，诊断消息与阶段进度分别处理。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NixProgress {
     Text(String),
@@ -25,6 +31,10 @@ pub enum NixProgress {
     Status {
         detail: Option<Box<NixProgress>>,
         activities: Vec<String>,
+    },
+    Message {
+        level: MessageLevel,
+        text: String,
     },
 }
 
@@ -45,6 +55,7 @@ impl NixProgress {
                     .map_or_else(|| Self::Text(prefix.into()), |value| (*value).with_prefix(prefix));
                 *detail = Some(Box::new(value));
             }
+            Self::Message { .. } => {}
         }
         self
     }
@@ -53,7 +64,7 @@ impl NixProgress {
         match self {
             Self::Text(text) => text,
             Self::Counter { label, .. } => label,
-            Self::Status { .. } => "Working",
+            Self::Status { .. } | Self::Message { .. } => "Working",
         }
     }
 }
@@ -74,374 +85,30 @@ impl From<&str> for NixProgress {
 pub fn eval_json(expr: &str) -> Result<serde_json::Value, Error> {
     let mut command = Command::new("nix");
     command.args(["eval", "--impure", "--json", "--expr", expr]);
-    let out = crate::progress::command_output(&mut command).map_err(|error| Error::Nix(error.to_string()))?;
+    let out = crate::process::command_output(&mut command).map_err(|error| Error::Nix(error.to_string()))?;
     if !out.status.success() {
         return Err(Error::Nix(String::from_utf8_lossy(&out.stderr).into_owned()));
     }
     serde_json::from_slice(&out.stdout).map_err(|error| Error::Nix(error.to_string()))
 }
 
-#[derive(Debug)]
-enum Activity {
-    Copy(Vec<String>),
-    Download {
-        done: u64,
-        total: Option<u64>,
-    },
-    Build {
-        name: Option<String>,
-        phase: Option<(u64, String)>,
-        download: Option<(u64, NixProgress)>,
-    },
-    Query(Vec<String>),
-}
-
-#[derive(Default)]
-struct NixLog {
-    activities: std::collections::BTreeMap<u64, Activity>,
-    phase_sequence: u64,
-    completed_download_bytes: u64,
-    completed_download_total: u64,
-    completed_download_total_unknown: bool,
-    diagnostic: Option<String>,
-}
-
-impl NixLog {
-    fn push(&mut self, line: &str) -> Option<String> {
-        let Some(json) = line.strip_prefix("@nix ") else {
-            return Some(line.into());
-        };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-            return Some(line.into());
-        };
-        let Some(action) = value.get("action").and_then(serde_json::Value::as_str) else {
-            return Some(line.into());
-        };
-        if action == "msg" {
-            return value
-                .get("msg")
-                .or_else(|| value.get("raw_msg"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .or_else(|| Some(line.into()));
-        }
-        if !matches!(action, "start" | "stop" | "result") {
-            return None;
-        }
-        let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) else {
-            return Some(line.into());
-        };
-        match action {
-            "start" => {
-                let activity = match value.get("type").and_then(serde_json::Value::as_u64) {
-                    Some(100) => Activity::Copy(activity_fields(&value)),
-                    Some(101) => Activity::Download { done: 0, total: None },
-                    Some(105) => Activity::Build {
-                        name: value
-                            .get("fields")
-                            .and_then(serde_json::Value::as_array)
-                            .and_then(|fields| fields.first())
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_owned),
-                        phase: None,
-                        download: None,
-                    },
-                    Some(108) => Activity::Query(activity_fields(&value)),
-                    Some(_) => return None,
-                    None => return Some(line.into()),
-                };
-                self.activities.insert(id, activity);
-            }
-            "stop" => {
-                if let Some(Activity::Download { done, total }) = self.activities.remove(&id) {
-                    self.completed_download_bytes = self.completed_download_bytes.saturating_add(done);
-                    if let Some(total) = total {
-                        self.completed_download_total = self.completed_download_total.saturating_add(total);
-                    } else {
-                        self.completed_download_total_unknown = true;
-                    }
-                }
-            }
-            "result" => {
-                let Some(kind) = value.get("type").and_then(serde_json::Value::as_u64) else {
-                    return Some(line.into());
-                };
-                let fields = value.get("fields").and_then(serde_json::Value::as_array);
-                match (kind, self.activities.get_mut(&id), fields) {
-                    (105, Some(Activity::Download { done, total }), Some(fields)) => {
-                        *done = fields.first().and_then(serde_json::Value::as_u64).unwrap_or(*done);
-                        *total = fields
-                            .get(1)
-                            .and_then(serde_json::Value::as_u64)
-                            .filter(|value| *value > 0);
-                    }
-                    (104, Some(Activity::Build { phase, .. }), Some(fields)) => {
-                        let Some(value) = fields.first().and_then(serde_json::Value::as_str) else {
-                            return Some(line.into());
-                        };
-                        self.phase_sequence += 1;
-                        *phase = Some((self.phase_sequence, value.into()));
-                    }
-                    (101, activity, Some(fields)) => {
-                        let Some(value) = fields.first().and_then(serde_json::Value::as_str) else {
-                            return Some(line.into());
-                        };
-                        if let Some(Activity::Build { download, .. }) = activity {
-                            self.phase_sequence += 1;
-                            *download = builder_progress(value).map(|progress| (self.phase_sequence, progress));
-                        }
-                        return Some(value.into());
-                    }
-                    (101 | 104 | 105, _, None) => return Some(line.into()),
-                    _ => return None,
-                }
-            }
-            _ => unreachable!(),
-        }
-        None
-    }
-
-    fn detail(&self) -> Option<NixProgress> {
-        let downloads: Vec<_> = self
-            .activities
-            .values()
-            .filter_map(|activity| match activity {
-                Activity::Download { done, total } => Some((*done, *total)),
-                _ => None,
-            })
-            .collect();
-        if !downloads.is_empty() {
-            let done = downloads.iter().fold(self.completed_download_bytes, |sum, (done, _)| {
-                sum.saturating_add(*done)
-            });
-            let transfers = downloads.len();
-            let total = (!self.completed_download_total_unknown && downloads.iter().all(|(_, total)| total.is_some()))
-                .then(|| {
-                    downloads.iter().fold(self.completed_download_total, |sum, (_, total)| {
-                        sum.saturating_add(total.unwrap_or_default())
-                    })
-                });
-            return Some(NixProgress::Counter {
-                current: done,
-                total,
-                unit: NixProgressUnit::Bytes,
-                label: format!(
-                    "Downloading · {transfers} {}",
-                    if transfers == 1 { "transfer" } else { "transfers" }
-                ),
-            });
-        }
-        if self
-            .activities
-            .values()
-            .any(|activity| matches!(activity, Activity::Copy(_)))
-        {
-            return Some(NixProgress::Text("Copying Store Path".into()));
-        }
-        let builder_downloads: Vec<_> = self
-            .activities
-            .values()
-            .filter_map(|activity| match activity {
-                Activity::Build { download, .. } => download.as_ref(),
-                _ => None,
-            })
-            .collect();
-        if let Some((_, latest)) = builder_downloads.iter().max_by_key(|(sequence, _)| *sequence).copied() {
-            if let NixProgress::Counter { unit, label, .. } = latest {
-                let counters: Vec<_> = builder_downloads
-                    .iter()
-                    .filter_map(|(_, progress)| match progress {
-                        NixProgress::Counter {
-                            current,
-                            total,
-                            unit: candidate_unit,
-                            label: candidate_label,
-                        } if candidate_unit == unit && candidate_label == label => Some((*current, *total)),
-                        _ => None,
-                    })
-                    .collect();
-                let current = counters
-                    .iter()
-                    .fold(0_u64, |sum, (current, _)| sum.saturating_add(*current));
-                let total = counters.iter().all(|(_, total)| total.is_some()).then(|| {
-                    counters
-                        .iter()
-                        .fold(0_u64, |sum, (_, total)| sum.saturating_add(total.unwrap_or_default()))
-                });
-                return Some(NixProgress::Counter {
-                    current,
-                    total,
-                    unit: *unit,
-                    label: if counters.len() == 1 {
-                        label.clone()
-                    } else {
-                        format!("{label} · {} transfers", counters.len())
-                    },
-                });
-            }
-            return Some(latest.clone());
-        }
-        if let Some((_, phase)) = self
-            .activities
-            .values()
-            .filter_map(|activity| match activity {
-                Activity::Build { phase, .. } => phase.as_ref(),
-                _ => None,
-            })
-            .max_by_key(|(sequence, _)| *sequence)
-        {
-            return Some(NixProgress::Text(phase.clone()));
-        }
-        if self
-            .activities
-            .values()
-            .any(|activity| matches!(activity, Activity::Build { .. }))
-        {
-            return Some(NixProgress::Text("Building".into()));
-        }
-        self.activities
-            .values()
-            .any(|activity| matches!(activity, Activity::Query(_)))
-            .then(|| NixProgress::Text("Querying Cache".into()))
-    }
-
-    fn progress(&self) -> Option<NixProgress> {
-        let detail = self.detail();
-        let activities = self.activity_lines();
-        if activities.is_empty() {
-            detail
-        } else {
-            Some(NixProgress::Status {
-                detail: detail.map(Box::new),
-                activities,
-            })
-        }
-    }
-
-    fn activity_lines(&self) -> Vec<String> {
-        let mut lines: Vec<_> = self
-            .activities
-            .values()
-            .filter_map(|activity| match activity {
-                Activity::Build { name, phase, download } => {
-                    let mut line = name
-                        .as_deref()
-                        .map_or_else(|| "Building".into(), |name| format!("Building {name}"));
-                    if let Some((_, phase)) = phase {
-                        line.push_str(" · ");
-                        line.push_str(phase);
-                    } else if let Some((_, progress)) = download {
-                        line.push_str(" · ");
-                        line.push_str(progress.label());
-                    }
-                    Some(line)
-                }
-                Activity::Copy(fields) => Some(activity_line("Copying", fields)),
-                Activity::Query(fields) => Some(activity_line("Querying", fields)),
-                Activity::Download { .. } => None,
-            })
-            .collect();
-        lines.extend(self.diagnostic.iter().cloned());
-        lines
-    }
-}
-
-fn activity_fields(value: &serde_json::Value) -> Vec<String> {
-    value
-        .get("fields")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .collect()
-}
-
-fn activity_line(action: &str, fields: &[String]) -> String {
-    if fields.is_empty() {
-        action.into()
+/// 哈希探测先暂存失败消息，等完整输出确认是否仅为预期的 hash mismatch。
+fn emit_diagnostic(
+    message: (MessageLevel, String),
+    expected_hash: bool,
+    deferred: &mut Vec<(MessageLevel, String)>,
+    progress: &mut impl FnMut(Option<NixProgress>),
+) {
+    if expected_hash && message.0 == MessageLevel::Failure {
+        deferred.push(message);
     } else {
-        format!("{action} {}", fields.join(" → "))
+        progress(Some(diagnostic_summary(message.0, &message.1)));
     }
-}
-
-fn builder_progress(line: &str) -> Option<NixProgress> {
-    curl_progress(line).or_else(|| git_progress(line))
-}
-
-fn curl_progress(line: &str) -> Option<NixProgress> {
-    let fields: Vec<_> = line.split_whitespace().collect();
-    if fields.len() < 9 {
-        return None;
-    }
-    let percent: u8 = fields[0].parse().ok()?;
-    let size = |value: &str| {
-        value.chars().any(|character| character.is_ascii_digit())
-            && value
-                .chars()
-                .all(|character| character.is_ascii_digit() || ".kMGT".contains(character))
-    };
-    if percent > 100
-        || !size(fields[1])
-        || !size(fields[3])
-        || !(fields[8..].iter().any(|value| value.contains(':')) || fields.iter().all(|value| *value == "0"))
-    {
-        return None;
-    }
-    Some(NixProgress::Counter {
-        current: parse_size(fields[3])?,
-        total: (fields[1] != "0").then(|| parse_size(fields[1])).flatten(),
-        unit: NixProgressUnit::Bytes,
-        label: "Downloading".into(),
-    })
-}
-
-fn git_progress(line: &str) -> Option<NixProgress> {
-    if !line.contains('|') && !line.contains("Receiving objects:") && !line.contains("Downloading LFS objects:") {
-        return None;
-    }
-    let marker = line.find("% (")?;
-    let percent = line[..marker]
-        .rsplit(|character: char| !character.is_ascii_digit())
-        .next()?
-        .parse::<u8>()
-        .ok()?;
-    let counts = line[marker + 3..].split_once(')')?.0;
-    let (done, total) = counts.split_once('/')?;
-    if percent > 100
-        || done.is_empty()
-        || total.is_empty()
-        || !done.chars().all(|character| character.is_ascii_digit())
-        || !total.chars().all(|character| character.is_ascii_digit())
-    {
-        return None;
-    }
-    Some(NixProgress::Counter {
-        current: done.parse().ok()?,
-        total: Some(total.parse().ok()?),
-        unit: NixProgressUnit::Objects,
-        label: if line.contains("Downloading LFS objects:") {
-            "LFS objects"
-        } else {
-            "Git objects"
-        }
-        .into(),
-    })
-}
-
-fn parse_size(value: &str) -> Option<u64> {
-    let (number, multiplier) = match value.chars().last()? {
-        'k' => (&value[..value.len() - 1], 1024_f64),
-        'M' => (&value[..value.len() - 1], 1024_f64.powi(2)),
-        'G' => (&value[..value.len() - 1], 1024_f64.powi(3)),
-        'T' => (&value[..value.len() - 1], 1024_f64.powi(4)),
-        _ => (value, 1.0),
-    };
-    Some((number.parse::<f64>().ok()? * multiplier).round() as u64)
 }
 
 fn build(
     drv_path: &str,
+    expected_hash: bool,
     mut progress: impl FnMut(Option<NixProgress>),
 ) -> Result<(std::process::ExitStatus, String), Error> {
     use std::io::{BufRead, BufReader, Read};
@@ -461,12 +128,12 @@ fn build(
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    crate::progress::configure_child_process(&mut command);
+    crate::process::configure_child_process(&mut command);
     let mut child = command.spawn().map_err(|error| Error::Nix(error.to_string()))?;
     let mut stdout = child
         .stdout
         .take()
-        .ok_or_else(|| Error::Nix("无法读取 Nix stdout".into()))?;
+        .ok_or_else(|| Error::Nix("cannot read Nix stdout".into()))?;
     let stdout = std::thread::spawn(move || {
         let mut bytes = Vec::new();
         stdout.read_to_end(&mut bytes).map(|_| bytes)
@@ -474,7 +141,7 @@ fn build(
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| Error::Nix("无法读取 Nix stderr".into()))?;
+        .ok_or_else(|| Error::Nix("cannot read Nix stderr".into()))?;
     let (lines, receiver) = mpsc::channel();
     let stderr = std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
@@ -486,12 +153,14 @@ fn build(
     let mut state = NixLog::default();
     let mut last_detail = None;
     let mut diagnostics = String::new();
+    let mut pending_message: Option<(MessageLevel, String)> = None;
+    let mut deferred = Vec::new();
     let mut stderr_error = None;
     let mut was_cancelled = false;
     loop {
-        if crate::progress::cancelled() {
+        if crate::process::cancelled() {
             was_cancelled = true;
-            crate::progress::kill_child_tree(&mut child);
+            crate::process::kill_child_tree(&mut child);
             break;
         }
         match receiver.recv_timeout(Duration::from_millis(50)) {
@@ -499,46 +168,64 @@ fn build(
                 if let Some(line) = state.push(&line) {
                     diagnostics.push_str(&line);
                     diagnostics.push('\n');
-                    state.diagnostic = Some(line);
+                    if !state.diagnostic_is_progress {
+                        let text = terminal_text(&line);
+                        let trimmed = text.trim_start();
+                        let continuation = state.diagnostic_level.is_none()
+                            && (text.starts_with(char::is_whitespace)
+                                || trimmed.starts_with("specified:")
+                                || trimmed.starts_with("got:"));
+                        if let Some((_, pending)) = pending_message.as_mut().filter(|_| continuation) {
+                            pending.push('\n');
+                            pending.push_str(&line);
+                        } else {
+                            if let Some(message) = pending_message.take() {
+                                emit_diagnostic(message, expected_hash, &mut deferred, &mut progress);
+                            }
+                            let level = match state.diagnostic_level {
+                                Some(0) => MessageLevel::Failure,
+                                Some(_) => MessageLevel::Info,
+                                None => activity_message_level(&text),
+                            };
+                            let text = if state.diagnostic_level == Some(1) && !trimmed.starts_with("warning:") {
+                                format!("warning: {line}")
+                            } else {
+                                line
+                            };
+                            pending_message = Some((level, text));
+                        }
+                    }
+                } else if let Some(message) = pending_message.take() {
+                    emit_diagnostic(message, expected_hash, &mut deferred, &mut progress);
                 }
                 let detail = state.progress();
                 if detail != last_detail {
                     progress(detail.clone());
                     last_detail = detail;
                 }
-                state.diagnostic = None;
             }
             Ok(Err(error)) => {
                 stderr_error = Some(error);
-                crate::progress::kill_child_tree(&mut child);
+                crate::process::kill_child_tree(&mut child);
                 break;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if child
-                    .try_wait()
-                    .map_err(|error| Error::Nix(error.to_string()))?
-                    .is_some()
-                {
-                    break;
-                }
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     let wait_result = child.wait();
     let _ = stderr.join();
     let stdout = stdout.join();
-    progress(None);
 
     if was_cancelled {
-        return Err(Error::Nix("已取消".into()));
+        return Err(Error::Nix("Cancelled".into()));
     }
     if let Some(error) = stderr_error {
         return Err(Error::Nix(error.to_string()));
     }
     let status = wait_result.map_err(|error| Error::Nix(error.to_string()))?;
     let stdout = stdout
-        .map_err(|_| Error::Nix("读取 Nix stdout 的线程异常退出".into()))?
+        .map_err(|_| Error::Nix("Nix stdout reader thread panicked".into()))?
         .map_err(|error| Error::Nix(error.to_string()))?;
     if !stdout.is_empty() {
         if !diagnostics.is_empty() && !diagnostics.ends_with('\n') {
@@ -547,18 +234,49 @@ fn build(
         diagnostics.push_str(&String::from_utf8_lossy(&stdout));
     }
 
+    if let Some(message) = pending_message {
+        emit_diagnostic(message, expected_hash, &mut deferred, &mut progress);
+    }
+    finish_diagnostics(expected_hash, &diagnostics, deferred, &mut progress);
+    progress(None);
+
     // 退出码不可作为判据：404 的 fetchurl 曾以 0 退出且无 got 行（ADR-0003）。
     Ok((status, diagnostics))
 }
 
+/// 找到 got 行后隐藏预期的哈希不匹配诊断；真正的构建错误仍进入消息流。
+fn finish_diagnostics(
+    expected_hash: bool,
+    diagnostics: &str,
+    deferred: Vec<(MessageLevel, String)>,
+    progress: &mut impl FnMut(Option<NixProgress>),
+) {
+    let hash = expected_hash.then(|| parse_got(diagnostics)).flatten();
+    for (level, text) in deferred {
+        let clean = terminal_text(&text);
+        let expected = clean.contains("hash mismatch") || parse_got(&clean).is_some() || clean.trim() == "❌";
+        if hash.is_none() || !expected {
+            progress(Some(diagnostic_summary(level, &text)));
+        }
+    }
+    if let Some(hash) = hash {
+        progress(Some(NixProgress::Message {
+            level: MessageLevel::Success,
+            text: format!("Resolved hash {hash}"),
+        }));
+    }
+}
+
+/// 占位哈希构建预期失败，以 got 行作为成功反馈而非依赖进程退出码。
 pub fn resolve_hash(drv_path: &str, progress: impl FnMut(Option<NixProgress>)) -> Result<String, Error> {
-    let (_, diagnostics) = build(drv_path, progress)?;
+    let (_, diagnostics) = build(drv_path, true, progress)?;
     // 退出码不可作为判据：404 的 fetchurl 曾以 0 退出且无 got 行（ADR-0003）。
     parse_got(&diagnostics).ok_or(Error::NoGotLine(diagnostics))
 }
 
+/// 实现非哈希探测的 derivation（如补丁源码），此时必须检查构建退出码。
 pub fn realize(drv_path: &str, progress: impl FnMut(Option<NixProgress>)) -> Result<(), Error> {
-    let (status, diagnostics) = build(drv_path, progress)?;
+    let (status, diagnostics) = build(drv_path, false, progress)?;
     if status.success() {
         Ok(())
     } else {
@@ -581,7 +299,7 @@ fn parse_got(log: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_got, NixLog, NixProgress, NixProgressUnit};
+    use super::{NixLog, NixProgress, NixProgressUnit, parse_got};
 
     /// 实测样本，取自本机 Nix 2.35.2（ADR-0003）。
     const MISMATCH: &str = concat!(
@@ -590,7 +308,7 @@ mod tests {
         "            got:    sha256-BlpIDik4hkU4c+KCyAmgUURIN362RDQID/qo6Ojp2Ek=\n",
     );
 
-    /// npmDeps 缺 lockfile 时的实测输出：无 got 行（ADR-0012）。
+    /// npmDeps 缺 lockfile 时的实测输出：无 got 行（ADR-0003）。
     const NO_LOCKFILE: &str = concat!(
         "svgo> ERROR: No lock file!\n",
         "error: Cannot build npm-deps.drv\n",
@@ -767,7 +485,7 @@ mod tests {
         log.push(r#"@nix {"action":"start","id":1,"type":105,"fields":["hidden.drv"]}"#);
 
         log.push(
-            r#"@nix {"action":"result","id":1,"type":101,"fields":["展开对象中: 42% (13/31), 4.2 MiB | 1.0 MiB/s"]}"#,
+            r#"@nix {"action":"result","id":1,"type":101,"fields":["\u5c55\u5f00\u5bf9\u8c61\u4e2d: 42% (13/31), 4.2 MiB | 1.0 MiB/s"]}"#,
         );
         assert_eq!(
             log.detail(),
@@ -833,7 +551,7 @@ mod tests {
     fn internal_json_uses_fixed_detail_priority_and_preserves_diagnostics() {
         let mut log = NixLog::default();
 
-        log.push(r#"@nix {"action":"start","id":1,"type":108,"fields":["cache"]}"#);
+        log.push(r#"@nix {"action":"start","id":1,"type":109,"fields":["cache"]}"#);
         assert_eq!(log.detail(), Some(NixProgress::Text("Querying Cache".into())));
         log.push(r#"@nix {"action":"start","id":2,"type":105,"fields":["/nix/store/demo.drv"]}"#);
         assert_eq!(log.detail(), Some(NixProgress::Text("Building".into())));
@@ -902,7 +620,7 @@ mod tests {
     fn internal_json_keeps_copy_query_and_build_paths_in_activity_lines() {
         let mut log = NixLog::default();
         log.push(r#"@nix {"action":"start","id":1,"type":100,"fields":["/nix/store/from","/nix/store/to"]}"#);
-        log.push(r#"@nix {"action":"start","id":2,"type":108,"fields":["https://cache.example/path?token=hidden"]}"#);
+        log.push(r#"@nix {"action":"start","id":2,"type":109,"fields":["https://cache.example/path?token=hidden"]}"#);
         log.push(r#"@nix {"action":"start","id":3,"type":105,"fields":["/nix/store/demo.drv"]}"#);
 
         assert_eq!(
@@ -913,5 +631,129 @@ mod tests {
                 "Building /nix/store/demo.drv".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn substitutes_are_copy_activities_and_queries_use_type_109() {
+        let mut log = NixLog::default();
+        log.push(r#"@nix {"action":"start","id":1,"type":108,"fields":["/nix/store/source","https://cache.example"]}"#);
+        log.push(r#"@nix {"action":"start","id":2,"type":109,"fields":["/nix/store/source","https://cache.example"]}"#);
+        assert_eq!(
+            log.activity_lines(),
+            vec![
+                "Copying /nix/store/source → https://cache.example".to_owned(),
+                "Querying /nix/store/source → https://cache.example".to_owned()
+            ]
+        );
+        log.push(r#"@nix {"action":"stop","id":1}"#);
+        assert_eq!(log.detail(), Some(NixProgress::Text("Querying Cache".into())));
+        log.push(r#"@nix {"action":"stop","id":2}"#);
+        assert_eq!(log.progress(), None);
+    }
+
+    #[test]
+    fn builder_counters_keep_diagnostics_but_do_not_enter_the_feed() {
+        let mut log = NixLog::default();
+        log.push(r#"@nix {"action":"start","id":1,"type":105,"fields":["/nix/store/demo.drv"]}"#);
+        let text = "Receiving objects: 42% (13/31), 4 MiB | 1 MiB/s\r";
+        let frame = serde_json::json!({"action":"result","id":1,"type":101,"fields":[text]});
+        assert_eq!(log.push(&format!("@nix {frame}")), Some(text.into()));
+        assert!(log.diagnostic_is_progress);
+        assert!(matches!(
+            log.detail(),
+            Some(NixProgress::Counter {
+                current: 13,
+                total: Some(31),
+                ..
+            })
+        ));
+        log.push(r#"@nix {"action":"result","id":1,"type":101,"fields":["packages 42 10 0 4 0 0 1 0 total"]}"#);
+        assert!(!log.diagnostic_is_progress);
+    }
+
+    #[test]
+    fn diagnostic_blocks_keep_levels_positions_and_trace_order() {
+        let mut log = NixLog::default();
+        let text =
+            "       … while evaluating\n       at config.nix:2:3\nerror: invalid declaration\n       source line";
+        let frame = serde_json::json!({"action":"msg","level":0,"msg":text});
+        assert_eq!(log.push(&format!("@nix {frame}")), Some(text.into()));
+        assert_eq!(log.diagnostic_level, Some(0));
+        assert_eq!(
+            super::diagnostic_summary(super::MessageLevel::Failure, text),
+            NixProgress::Message {
+                level: super::MessageLevel::Failure,
+                text: "error: invalid declaration".into()
+            }
+        );
+        let frame = serde_json::json!({"action":"msg","level":1,"raw_msg":"cache warning",
+            "file":"config.nix","line":2,"column":3,"trace":[
+                {"raw_msg":"first frame","file":"a.nix","line":4,"column":5},
+                {"raw_msg":"second frame","file":"b.nix","line":6,"column":7}]});
+        assert_eq!(log.push(&format!("@nix {frame}")), Some(
+            "cache warning\n       at config.nix:2:3\n       first frame\n       at a.nix:4:5\n       second frame\n       at b.nix:6:7".into()));
+        assert_eq!(log.diagnostic_level, Some(1));
+    }
+
+    #[test]
+    fn only_hash_resolution_can_reclassify_expected_mismatch_as_success() {
+        let mut messages = Vec::new();
+        let mut capture = |message: Option<NixProgress>| messages.push(message.unwrap());
+        let mut deferred = Vec::new();
+        super::emit_diagnostic(
+            (super::MessageLevel::Failure, "❌ \u{1b}[31;1m\u{1b}[0m".into()),
+            true,
+            &mut deferred,
+            &mut capture,
+        );
+        super::emit_diagnostic(
+            (super::MessageLevel::Failure, MISMATCH.into()),
+            true,
+            &mut deferred,
+            &mut capture,
+        );
+        assert_eq!(deferred.len(), 2);
+        super::finish_diagnostics(true, MISMATCH, deferred, &mut capture);
+        assert!(matches!(
+            messages.as_slice(),
+            [NixProgress::Message {
+                level: super::MessageLevel::Success,
+                ..
+            }]
+        ));
+        messages.clear();
+        let mut capture = |message: Option<NixProgress>| messages.push(message.unwrap());
+        let mut deferred = Vec::new();
+        super::emit_diagnostic(
+            (super::MessageLevel::Failure, NO_LOCKFILE.into()),
+            true,
+            &mut deferred,
+            &mut capture,
+        );
+        super::finish_diagnostics(true, NO_LOCKFILE, deferred, &mut capture);
+        assert!(matches!(
+            messages.as_slice(),
+            [NixProgress::Message {
+                level: super::MessageLevel::Failure,
+                ..
+            }]
+        ));
+        messages.clear();
+        let mut capture = |message: Option<NixProgress>| messages.push(message.unwrap());
+        let mut deferred = Vec::new();
+        super::emit_diagnostic(
+            (super::MessageLevel::Failure, MISMATCH.into()),
+            false,
+            &mut deferred,
+            &mut capture,
+        );
+        super::finish_diagnostics(false, MISMATCH, deferred, &mut capture);
+        assert!(matches!(
+            messages.as_slice(),
+            [NixProgress::Message {
+                level: super::MessageLevel::Failure,
+                ..
+            }]
+        ));
     }
 }

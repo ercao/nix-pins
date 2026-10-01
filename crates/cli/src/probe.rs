@@ -222,12 +222,16 @@ mod tests {
             fake_source["cpa-manager-plus"].sources["default"].derived,
             locked_source["cpa-manager-plus"].sources["default"].derived
         );
-        assert!(locked_source["cpa-manager-plus"].sources["default"]
-            .derived
-            .contains_key("vendorHash"));
-        assert!(locked_source["cpa-manager-plus"].sources["default"]
-            .derived
-            .contains_key("npmDepsHash"));
+        assert!(
+            locked_source["cpa-manager-plus"].sources["default"]
+                .derived
+                .contains_key("vendorHash")
+        );
+        assert!(
+            locked_source["cpa-manager-plus"].sources["default"]
+                .derived
+                .contains_key("npmDepsHash")
+        );
         assert!(
             locked_source["cpa-manager-plus"].sources["default"].packages["manager-server"].contains_key("vendorHash")
         );
@@ -259,10 +263,12 @@ in {{
 
         let result = nix::eval_json(&expr).unwrap();
 
-        assert!(result["managerServer"]
-            .as_str()
-            .unwrap()
-            .contains("cpa-manager-plus-manager-server-v1.12.1"));
+        assert!(
+            result["managerServer"]
+                .as_str()
+                .unwrap()
+                .contains("cpa-manager-plus-manager-server-v1.12.1")
+        );
         assert!(result["web"].as_str().unwrap().contains("cpa-manager-plus-web-v1.12.1"));
     }
 
@@ -295,14 +301,18 @@ in {{
         let result = nix::eval_json(&expr).unwrap();
 
         assert!(result["src"].as_str().unwrap().starts_with("/nix/store/"));
-        assert!(result["managerServer"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("cpa-manager-plus-manager-server-{version}")));
-        assert!(result["web"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("cpa-manager-plus-web-{version}")));
+        assert!(
+            result["managerServer"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("cpa-manager-plus-manager-server-{version}"))
+        );
+        assert!(
+            result["web"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("cpa-manager-plus-web-{version}"))
+        );
         assert_eq!(result["pinHasNpmDeps"], false);
         assert_eq!(result["sourceHasGoModules"], false);
         assert_eq!(result["packageHasNpmDeps"], true);

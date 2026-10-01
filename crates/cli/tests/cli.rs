@@ -582,9 +582,11 @@ esac
             }
         })
     );
-    assert!(pins["pins"]["demo"]["sources"]["default"]["fingerprints"]["hash"]
-        .as_str()
-        .is_some_and(|src| src.starts_with("/nix/store/")));
+    assert!(
+        pins["pins"]["demo"]["sources"]["default"]["fingerprints"]["hash"]
+            .as_str()
+            .is_some_and(|src| src.starts_with("/nix/store/"))
+    );
 }
 
 #[test]
@@ -1772,9 +1774,11 @@ printf '%s\n' '{"demo":{"cmd":"exit 1"}}'
     let output = run(&dir.0, &["status"]);
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(String::from_utf8_lossy(&output.stdout).contains("demo file"));
-    assert!(fs::read_to_string(dir.0.join("evaluated"))
-        .unwrap()
-        .contains("file-config.nix"));
+    assert!(
+        fs::read_to_string(dir.0.join("evaluated"))
+            .unwrap()
+            .contains("file-config.nix")
+    );
     let environment = [
         ("NIX_PINS_CONFIG", "env-config.nix"),
         ("NIX_PINS_FILE", "env-pins.json"),
@@ -1782,9 +1786,11 @@ printf '%s\n' '{"demo":{"cmd":"exit 1"}}'
     let output = run_with_env(&dir.0, &["status"], &environment);
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(String::from_utf8_lossy(&output.stdout).contains("demo env"));
-    assert!(fs::read_to_string(dir.0.join("evaluated"))
-        .unwrap()
-        .contains("env-config.nix"));
+    assert!(
+        fs::read_to_string(dir.0.join("evaluated"))
+            .unwrap()
+            .contains("env-config.nix")
+    );
     let output = run_with_env(
         &dir.0,
         &["status", "--config", "cli-config.nix", "--pins", "cli-pins.json"],
@@ -1792,9 +1798,11 @@ printf '%s\n' '{"demo":{"cmd":"exit 1"}}'
     );
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(String::from_utf8_lossy(&output.stdout).contains("demo cli"));
-    assert!(fs::read_to_string(dir.0.join("evaluated"))
-        .unwrap()
-        .contains("cli-config.nix"));
+    assert!(
+        fs::read_to_string(dir.0.join("evaluated"))
+            .unwrap()
+            .contains("cli-config.nix")
+    );
 
     fs::write(
         dir.0.join("nix-pins.toml"),
@@ -1844,4 +1852,74 @@ fn invalid_concurrency_config_fails_before_running_nix() {
     let output = run(&dir.0, &["update"]);
     assert!(!output.status.success());
     assert!(!dir.0.join("nix-started").exists());
+}
+
+#[test]
+fn fast_pin_finishes_derived_hashes_while_another_pin_is_downloading() {
+    let _serial = serial();
+    let dir = TempDir::new("pin-pipeline");
+    fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
+    fs::write(dir.0.join("pins.json"), r#"{"schemaVersion":2,"pins":{}}"#).unwrap();
+    fs::copy(dir.0.join("pins.json"), dir.0.join("original.json")).unwrap();
+    write_executable(
+        &dir.0.join("nix"),
+        r#"#!/bin/sh
+case "$1" in
+  eval)
+    case "$*" in
+      *p.check*)
+        printf '%s\n' '{"alpha":{"cmd":"touch alpha-checked; printf v2"},"zeta":{"cmd":"touch zeta-checked; printf v2"}}'
+        ;;
+      *)
+        printf '%s\n' '{"alpha":{"sources":{"default":{"src":"/nix/store/fast-source.drv","fetcher":{"url":{"url":"https://example.invalid/fast"}},"derived":{"vendorHash":"/nix/store/fast-derived.drv"}}}},"zeta":{"sources":{"default":{"src":"/nix/store/slow-source.drv","fetcher":{"url":{"url":"https://example.invalid/slow"}}}}}}'
+        ;;
+    esac
+    ;;
+  build)
+    test -f alpha-checked && test -f zeta-checked || exit 1
+    case "$*" in
+      *slow-source.drv*)
+        printf '%s\n' slow-start >> order
+        remaining=500
+        while test ! -f fast-derived; do
+          remaining=$((remaining - 1))
+          if test "$remaining" -eq 0; then
+            printf '%s\n' 'error: slow download blocked the fast pin' >&2
+            exit 1
+          fi
+          sleep 0.01
+        done
+        cmp pins.json original.json || exit 1
+        printf '%s\n' slow-end >> order
+        ;;
+      *fast-derived.drv*)
+        printf '%s\n' fast-derived >> order
+        touch fast-derived
+        ;;
+    esac
+    printf '%s\n' 'error: hash mismatch' '  specified: sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' '  got: sha256-pipeline' >&2
+    exit 1
+    ;;
+esac
+"#,
+    );
+    let output = run_with_env(
+        &dir.0,
+        &["update"],
+        &[("NIX_PINS_DOWNLOAD_JOBS", ""), ("NIX_PINS_HASH_JOBS", "1")],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let order = fs::read_to_string(dir.0.join("order")).unwrap();
+    assert!(
+        order.find("fast-derived").unwrap() < order.find("slow-end").unwrap(),
+        "{order}"
+    );
+    let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
+    assert_eq!(
+        pins["pins"]["alpha"]["sources"]["default"]["derived"]["vendorHash"],
+        "sha256-pipeline"
+    );
+    assert_eq!(pins["pins"]["zeta"]["sources"]["default"]["hash"], "sha256-pipeline");
+    assert!(stderr.contains("✔ alpha"), "{stderr}");
 }

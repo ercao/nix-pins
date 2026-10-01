@@ -269,8 +269,8 @@ mod tests {
 
     #[test]
     fn readers_only_observe_complete_json() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
         let root = std::env::temp_dir().join(format!(
             "nix-pins-observer-{}-{}",

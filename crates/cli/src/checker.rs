@@ -121,7 +121,7 @@ pub fn check(checker: &Checker, options: &Options) -> Result<String, String> {
 fn command_version(shell_command: &str) -> Result<String, String> {
     let mut command = Command::new("sh");
     command.args(["-c", shell_command]);
-    let output = crate::progress::command_output(&mut command).map_err(|error| error.to_string())?;
+    let output = crate::process::command_output(&mut command).map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
@@ -213,7 +213,7 @@ fn git_remote_version(url: &str, reference: &str) -> Result<String, String> {
     command
         .env("GIT_TERMINAL_PROMPT", "0")
         .args(["ls-remote", url, reference, &peeled]);
-    let output = crate::progress::command_output(&mut command).map_err(|error| error.to_string())?;
+    let output = crate::process::command_output(&mut command).map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
@@ -234,7 +234,7 @@ fn git_remote_tags(url: &str) -> Result<String, String> {
     command
         .env("GIT_TERMINAL_PROMPT", "0")
         .args(["ls-remote", "--tags", "--refs", url]);
-    let output = crate::progress::command_output(&mut command).map_err(|error| error.to_string())?;
+    let output = crate::process::command_output(&mut command).map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
@@ -376,7 +376,7 @@ fn nonempty(value: String) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_tags, Checker};
+    use super::{Checker, compare_tags};
     use serde_json::json;
     use std::cmp::Ordering;
 
@@ -773,8 +773,10 @@ mod tests {
     fn command_checker_requires_exactly_one_nonempty_line() {
         assert_eq!(super::command_version("printf '  v1.2.3  \\n'").unwrap(), "v1.2.3");
         assert!(super::command_version("printf ''").unwrap_err().contains("empty"));
-        assert!(super::command_version("printf 'v1\\nv2\\n'")
-            .unwrap_err()
-            .contains("exactly one"));
+        assert!(
+            super::command_version("printf 'v1\\nv2\\n'")
+                .unwrap_err()
+                .contains("exactly one")
+        );
     }
 }
