@@ -3,7 +3,7 @@ const siteURL = process.env.NUXT_SITE_URL || 'https://nix-pins.ercao.dev'
 
 export default defineNuxtConfig({
   extends: ['docus'],
-  modules: ['@nuxtjs/i18n'],
+  modules: ['@nuxtjs/i18n', '@vercel/analytics', '@vercel/speed-insights'],
   i18n: {
     defaultLocale: 'zh-CN',
     locales: [{ code: 'zh-CN', language: 'zh-CN', name: '简体中文' }],
