@@ -9,7 +9,7 @@ pnpm install --frozen-lockfile
 pnpm docs:dev
 ```
 
-`pnpm-workspace.yaml` 使用 `overrides` 取消 Docus 对 `better-sqlite3` 的必需 peer 要求。锁文件中仍可能保留 Content／db0 的可选 peer 引用；文档内容处理使用原生驱动。升级文档依赖时需重新核对原生驱动支持。
+`pnpm-workspace.yaml` 显式设置 `allowBuilds.better-sqlite3: false`，跳过无需使用的原生扩展构建脚本，避免干净的 CI 安装因 `ERR_PNPM_IGNORED_BUILDS` 失败。该包仍可能作为 peer 依赖安装，文档内容处理使用 Node 原生驱动。升级文档依赖时需重新核对原生驱动支持。
 
 本地开发地址由 Nuxt 输出。生产构建与校验：
 
