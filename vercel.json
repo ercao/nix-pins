@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm docs:build && pnpm docs:check",
+  "outputDirectory": "docs/.output/public",
+  "cleanUrls": true,
+  "redirects": [
+    { "source": "/", "destination": "/zh-CN/getting-started/installation", "permanent": false },
+    { "source": "/zh-CN", "destination": "/zh-CN/getting-started/installation", "permanent": false },
+    { "source": "/getting-started", "destination": "/zh-CN/getting-started/installation", "permanent": false }
+  ]
+}

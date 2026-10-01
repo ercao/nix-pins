@@ -1,0 +1,24 @@
+{
+  "name": "nix-pins-docs",
+  "description": "nix-pins 的中文使用指南与公开 API 参考",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "check": "python3 scripts/check-site.py",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "@nuxt/content": "3.16.1",
+    "@nuxt/ui": "4.11.2",
+    "@nuxtjs/i18n": "10.6.0",
+    "docus": "5.13.0",
+    "nuxt": "4.5.2"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
