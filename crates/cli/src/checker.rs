@@ -89,7 +89,7 @@ pub struct Options {
 }
 
 impl Options {
-    pub fn from_env() -> Result<Self, String> {
+    pub fn from_settings(settings: &crate::settings::Settings) -> Result<Self, String> {
         let client = Client::builder()
             .user_agent("nix-pins/0.1")
             .timeout(Duration::from_secs(30))
@@ -97,13 +97,11 @@ impl Options {
             .map_err(|error| error.to_string())?;
         Ok(Self {
             client,
-            github_api_base: env_or("NIX_PINS_GITHUB_API_BASE", "https://api.github.com"),
-            crates_api_base: env_or("NIX_PINS_CRATES_API_BASE", "https://crates.io"),
-            pypi_api_base: env_or("NIX_PINS_PYPI_API_BASE", "https://pypi.org"),
-            npm_registry_base: env_or("NIX_PINS_NPM_REGISTRY_BASE", "https://registry.npmjs.org"),
-            github_token: std::env::var("NIX_PINS_GITHUB_TOKEN")
-                .or_else(|_| std::env::var("GITHUB_TOKEN"))
-                .ok(),
+            github_api_base: settings.github_api_base.clone(),
+            crates_api_base: settings.crates_api_base.clone(),
+            pypi_api_base: settings.pypi_api_base.clone(),
+            npm_registry_base: settings.npm_registry_base.clone(),
+            github_token: settings.github_token.clone(),
         })
     }
 }
@@ -376,10 +374,6 @@ fn nonempty(value: String) -> Result<String, String> {
     }
 }
 
-fn env_or(name: &str, default: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| default.into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{compare_tags, Checker};
@@ -475,7 +469,9 @@ mod tests {
     #[test]
     fn git_checker_resolves_head_branch_and_ref_to_commits() {
         let fixture = GitFixture::new();
-        let options = super::Options::from_env().unwrap();
+        let options =
+            super::Options::from_settings(&crate::settings::Settings::load(config::Config::default()).unwrap())
+                .unwrap();
         git(
             None,
             &[
@@ -548,7 +544,9 @@ mod tests {
     #[test]
     fn git_checker_filters_tags_and_selects_the_requested_sort_order() {
         let fixture = GitFixture::new();
-        let options = super::Options::from_env().unwrap();
+        let options =
+            super::Options::from_settings(&crate::settings::Settings::load(config::Config::default()).unwrap())
+                .unwrap();
         let cases = [
             (
                 serde_json::json!({
@@ -664,7 +662,9 @@ mod tests {
             &[("Content-Type", "application/json")],
             "{\"dist-tags\":{\"next\":\"2.0.0\"}}",
         )]);
-        let mut options = super::Options::from_env().unwrap();
+        let mut options =
+            super::Options::from_settings(&crate::settings::Settings::load(config::Config::default()).unwrap())
+                .unwrap();
         options.npm_registry_base = fixture.base.clone();
         let checker = serde_json::from_value::<Checker>(serde_json::json!({
             "npm": {"name": "@scope/pkg", "distTag": "next"}
@@ -702,7 +702,9 @@ mod tests {
     #[test]
     fn git_checker_defaults_to_head() {
         let fixture = GitFixture::new();
-        let options = super::Options::from_env().unwrap();
+        let options =
+            super::Options::from_settings(&crate::settings::Settings::load(config::Config::default()).unwrap())
+                .unwrap();
         for declaration in [
             serde_json::json!({"git": fixture.url()}),
             serde_json::json!({"git": {"url": fixture.url()}}),
@@ -731,7 +733,9 @@ mod tests {
             &[("Content-Type", "application/json")],
             "{\"dist-tags\":{\"latest\":\"1.2.3\"}}",
         )]);
-        let mut options = super::Options::from_env().unwrap();
+        let mut options =
+            super::Options::from_settings(&crate::settings::Settings::load(config::Config::default()).unwrap())
+                .unwrap();
         options.npm_registry_base = latest.base.clone();
         let checker = serde_json::from_value::<Checker>(serde_json::json!({
             "npm": {"name": "demo"}

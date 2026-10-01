@@ -8,8 +8,11 @@ mod nix;
 mod pins;
 mod probe;
 mod progress;
+mod selection;
+mod settings;
 
-use cli::{Command, Selection};
+use cli::Command;
+use selection::Selection;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -52,13 +55,13 @@ struct UpdateResult {
 fn main() -> ExitCode {
     let invocation = cli::parse();
     match invocation.command {
-        Command::Update(selection) => run_update(&invocation.config, &invocation.pins, &selection),
-        Command::Status(selection) => run_status(&invocation.config, &invocation.pins, &selection),
+        Command::Update(selection) => run_update(&invocation.settings, &selection),
+        Command::Status(selection) => run_status(&invocation.settings.config, &invocation.settings.file, &selection),
     }
 }
 
 /// 部分失败保留旧条目，以非零退出码结束（ADR-0007）。
-fn run_update(config: &Path, pins_path: &Path, selection: &Selection) -> ExitCode {
+fn run_update(settings: &settings::Settings, selection: &Selection) -> ExitCode {
     let progress = match progress::Progress::stderr() {
         Ok(progress) => progress,
         Err(error) => {
@@ -66,7 +69,7 @@ fn run_update(config: &Path, pins_path: &Path, selection: &Selection) -> ExitCod
             return ExitCode::from(1);
         }
     };
-    let result = update(config, pins_path, selection, &progress);
+    let result = update(settings, selection, &progress);
     let terminal = progress.finish();
     if progress::cancelled() {
         if terminal {
@@ -138,16 +141,17 @@ fn run_status(config: &Path, pins_path: &Path, selection: &Selection) -> ExitCod
 }
 
 fn update(
-    config: &Path,
-    pins_path: &Path,
+    settings: &settings::Settings,
     selection: &Selection,
     progress: &progress::Progress,
 ) -> Result<UpdateResult, String> {
+    let config = &settings.config;
+    let pins_path = &settings.file;
     ensure_not_cancelled()?;
     progress.phase(progress::Phase::LoadingConfiguration);
     let mut transaction = pins::PinsFile::transaction(pins_path).map_err(|error| error.to_string())?;
     let pins = &mut transaction.pins;
-    let checker_options = checker::Options::from_env()?;
+    let checker_options = checker::Options::from_settings(settings)?;
 
     let checks = probe::probe_checks(&config.display().to_string()).map_err(nix_error)?;
     selection.validate(checks.keys().map(String::as_str))?;
@@ -166,12 +170,7 @@ fn update(
 
     let mut versions = BTreeMap::new();
     let mut failures = BTreeMap::new();
-    for (name, result) in run_checkers(
-        selected,
-        checker_options,
-        env_jobs("NIX_PINS_CHECKER_JOBS", 8),
-        reporter.clone(),
-    ) {
+    for (name, result) in run_checkers(selected, checker_options, settings.checker_jobs, reporter.clone()) {
         pins.failures.remove(&name);
         match result {
             Ok(version) => {
@@ -189,7 +188,7 @@ fn update(
         progress.phase(progress::Phase::ResolvingSources);
         let empty_hashes = BTreeMap::<String, BTreeMap<String, String>>::new();
         let (mut source_probes, source_probe_failures) =
-            probe_pins(&config, &versions, &empty_hashes, env_jobs("NIX_PINS_HASH_JOBS", 1));
+            probe_pins(&config, &versions, &empty_hashes, settings.hash_jobs);
         for (pin, error) in source_probe_failures {
             reporter.failed(&pin, "Resolving sources");
             failures.insert(pin, error);
@@ -226,7 +225,7 @@ fn update(
 
             let mut sources = BTreeMap::<String, BTreeMap<String, SourceResult>>::new();
             let mut source_failures = BTreeMap::<String, Vec<TaskFailure>>::new();
-            for ((pin, source), result) in run_sources(tasks, env_jobs("NIX_PINS_DOWNLOAD_JOBS", 8), reporter.clone()) {
+            for ((pin, source), result) in run_sources(tasks, settings.download_jobs, reporter.clone()) {
                 match result {
                     Ok(result) => {
                         sources.entry(pin).or_default().insert(source, result);
@@ -272,12 +271,8 @@ fn update(
                     })
                     .collect();
                 progress.phase(progress::Phase::ResolvingDerivedHashes);
-                let (mut derived_probes, derived_probe_failures) = probe_pins(
-                    &config,
-                    &successful_versions,
-                    &source_hashes,
-                    env_jobs("NIX_PINS_HASH_JOBS", 1),
-                );
+                let (mut derived_probes, derived_probe_failures) =
+                    probe_pins(&config, &successful_versions, &source_hashes, settings.hash_jobs);
                 ensure_not_cancelled()?;
                 for (pin, error) in derived_probe_failures {
                     reporter.failed(&pin, "Resolving derived hashes");
@@ -305,9 +300,7 @@ fn update(
 
                     let mut resolved = BTreeMap::<String, BTreeMap<String, pins::Source>>::new();
                     let mut derived_failures = BTreeMap::<String, Vec<TaskFailure>>::new();
-                    for ((pin, source), result) in
-                        run_derived(tasks, env_jobs("NIX_PINS_HASH_JOBS", 1), reporter.clone())
-                    {
+                    for ((pin, source), result) in run_derived(tasks, settings.hash_jobs, reporter.clone()) {
                         match result {
                             Ok(result) => {
                                 resolved.entry(pin).or_default().insert(source, result);
@@ -760,14 +753,6 @@ where
         worker.join().unwrap();
     }
     results
-}
-
-fn env_jobs(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|jobs| *jobs > 0)
-        .unwrap_or(default)
 }
 
 fn nix_error(error: nix::Error) -> String {

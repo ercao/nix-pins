@@ -1138,46 +1138,63 @@ esac
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(std::time::Instant::now() < deadline, "Checker made no HTTP request");
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+        for token in ["fallback-token", "file-token", "env-token", "cli-token"] {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(std::time::Instant::now() < deadline, "Checker made no HTTP request");
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("{error}"),
                 }
-                Err(error) => panic!("{error}"),
-            }
-        };
-        stream.set_nonblocking(false).unwrap();
-        let mut request = [0; 4096];
-        let size = stream.read(&mut request).unwrap();
-        let request = String::from_utf8_lossy(&request[..size]);
-        assert!(request.starts_with("GET /repos/acme/demo/releases/latest "));
-        assert!(request.contains("authorization: Bearer secret-token"));
-        let body = r#"{"tag_name":"v9"}"#;
-        write!(
+            };
+            stream.set_nonblocking(false).unwrap();
+            let mut request = [0; 4096];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]);
+            assert!(request.starts_with("GET /repos/acme/demo/releases/latest "));
+            assert!(request.contains(&format!("authorization: Bearer {token}")));
+            let body = r#"{"tag_name":"v9"}"#;
+            write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
         )
-        .unwrap();
+            .unwrap();
+        }
     });
     let base = format!("http://{address}");
 
-    let output = run_with_env(
-        &dir.0,
-        &["update"],
-        &[
-            ("NIX_PINS_GITHUB_API_BASE", &base),
-            ("NIX_PINS_GITHUB_TOKEN", "secret-token"),
-        ],
-    );
+    for (index, (args, token)) in [
+        (&["update"][..], ""),
+        (&["update"][..], ""),
+        (&["update"][..], "env-token"),
+        (&["update", "--github-token", "cli-token"][..], "env-token"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index == 1 {
+            fs::write(dir.0.join("nix-pins.toml"), "github_token = 'file-token'\n").unwrap();
+        }
+        let output = run_with_env(
+            &dir.0,
+            args,
+            &[
+                ("NIX_PINS_GITHUB_API_BASE", &base),
+                ("NIX_PINS_GITHUB_TOKEN", token),
+                ("GITHUB_TOKEN", "fallback-token"),
+            ],
+        );
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        for token in ["fallback-token", "file-token", "env-token", "cli-token"] {
+            assert!(!String::from_utf8_lossy(&output.stderr).contains(token));
+        }
+    }
     server.join().unwrap();
-
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("secret-token"));
     let pins: Value = serde_json::from_slice(&fs::read(dir.0.join("pins.json")).unwrap()).unwrap();
     assert_eq!(pins["pins"]["demo"]["version"], "v9");
 }
@@ -1424,6 +1441,35 @@ fn clap_help_version_and_errors_use_standard_exit_codes() {
     assert!(help.contains("Usage:"), "{help}");
     assert!(help.contains("update"), "{help}");
     assert!(help.contains("status"), "{help}");
+
+    let output = run_with_env(
+        &dir.0,
+        &["update", "--help"],
+        &[
+            ("NIX_PINS_GITHUB_TOKEN", "help-secret-token"),
+            ("GITHUB_TOKEN", "fallback-secret-token"),
+        ],
+    );
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    for (flag, env) in [
+        ("--config", "NIX_PINS_CONFIG"),
+        ("--pins", "NIX_PINS_FILE"),
+        ("--checker-jobs", "NIX_PINS_CHECKER_JOBS"),
+        ("--download-jobs", "NIX_PINS_DOWNLOAD_JOBS"),
+        ("--hash-jobs", "NIX_PINS_HASH_JOBS"),
+        ("--github-api-base", "NIX_PINS_GITHUB_API_BASE"),
+        ("--crates-api-base", "NIX_PINS_CRATES_API_BASE"),
+        ("--pypi-api-base", "NIX_PINS_PYPI_API_BASE"),
+        ("--npm-registry-base", "NIX_PINS_NPM_REGISTRY_BASE"),
+        ("--github-token", "NIX_PINS_GITHUB_TOKEN"),
+    ] {
+        assert!(help.contains(flag), "{help}");
+        assert!(help.contains(env), "{help}");
+    }
+    assert!(help.contains("default: 2"), "{help}");
+    assert!(!help.contains("help-secret-token"));
+    assert!(!help.contains("fallback-secret-token"));
 
     let version = run(&dir.0, &["--version"]);
     assert!(version.status.success());
@@ -1694,4 +1740,108 @@ esac
     assert!(!stderr.contains("secret.invalid"), "{stderr}");
     assert!(!stderr.contains("@nix"), "{stderr}");
     assert!(!stderr.contains("\u{1b}"), "{stderr}");
+}
+
+#[test]
+fn application_config_layers_file_environment_and_cli() {
+    let _serial = serial();
+    let dir = TempDir::new("application-config");
+    fs::write(
+        dir.0.join("nix-pins.toml"),
+        "config = 'file-config.nix'\nfile = 'file-pins.json'\nchecker_jobs = 1\ndownload_jobs = 2\nhash_jobs = 1\n",
+    )
+    .unwrap();
+    for name in ["file-pins.json", "env-pins.json", "cli-pins.json"] {
+        let version = name.trim_end_matches("-pins.json");
+        fs::write(
+            dir.0.join(name),
+            format!(r#"{{"schemaVersion":2,"pins":{{"demo":{{"version":"{version}","sources":{{}}}}}}}}"#),
+        )
+        .unwrap();
+    }
+    for name in ["file-config.nix", "env-config.nix", "cli-config.nix"] {
+        fs::write(dir.0.join(name), "{ pin }: {}\n").unwrap();
+    }
+    write_executable(
+        &dir.0.join("nix"),
+        r#"#!/bin/sh
+printf '%s\n' "$*" > evaluated
+printf '%s\n' '{"demo":{"cmd":"exit 1"}}'
+"#,
+    );
+    let output = run(&dir.0, &["status"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("demo file"));
+    assert!(fs::read_to_string(dir.0.join("evaluated"))
+        .unwrap()
+        .contains("file-config.nix"));
+    let environment = [
+        ("NIX_PINS_CONFIG", "env-config.nix"),
+        ("NIX_PINS_FILE", "env-pins.json"),
+    ];
+    let output = run_with_env(&dir.0, &["status"], &environment);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("demo env"));
+    assert!(fs::read_to_string(dir.0.join("evaluated"))
+        .unwrap()
+        .contains("env-config.nix"));
+    let output = run_with_env(
+        &dir.0,
+        &["status", "--config", "cli-config.nix", "--pins", "cli-pins.json"],
+        &environment,
+    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("demo cli"));
+    assert!(fs::read_to_string(dir.0.join("evaluated"))
+        .unwrap()
+        .contains("cli-config.nix"));
+
+    fs::write(
+        dir.0.join("nix-pins.toml"),
+        "config = 'file-config.nix'\ndownload_jobs = 0\n",
+    )
+    .unwrap();
+    let output = run_with_env(&dir.0, &["status"], &[("NIX_PINS_DOWNLOAD_JOBS", "")]);
+    assert_eq!(output.status.code(), Some(2));
+    let output = run_with_env(&dir.0, &["status"], &[("NIX_PINS_DOWNLOAD_JOBS", "2")]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let output = run_with_env(&dir.0, &["status"], &[("NIX_PINS_DOWNLOAD_JOBS", "0")]);
+    assert_eq!(output.status.code(), Some(2));
+    let output = run_with_env(
+        &dir.0,
+        &["status", "--download-jobs", "3"],
+        &[("NIX_PINS_DOWNLOAD_JOBS", "0")],
+    );
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn invalid_concurrency_config_fails_before_running_nix() {
+    let _serial = serial();
+    let dir = TempDir::new("invalid-application-config");
+    write_executable(&dir.0.join("nix"), "#!/bin/sh\ntouch nix-started\n");
+    for value in ["0", "-1", "invalid"] {
+        let output = run_with_env(&dir.0, &["update"], &[("NIX_PINS_DOWNLOAD_JOBS", value)]);
+        assert_eq!(output.status.code(), Some(2), "{value}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("download_jobs") || stderr.contains("--download-jobs"),
+            "{value}: {stderr}"
+        );
+        assert!(!dir.0.join("nix-started").exists());
+        assert!(!dir.0.join("pins.json").exists());
+    }
+    for args in [
+        vec!["update", "--checker-jobs", "0"],
+        vec!["--download-jobs", "0", "update"],
+        vec!["update", "--hash-jobs", "0"],
+    ] {
+        let output = run(&dir.0, &args);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!dir.0.join("nix-started").exists());
+    }
+    fs::write(dir.0.join("nix-pins.toml"), "hash_jobs = [\n").unwrap();
+    let output = run(&dir.0, &["update"]);
+    assert!(!output.status.success());
+    assert!(!dir.0.join("nix-started").exists());
 }
