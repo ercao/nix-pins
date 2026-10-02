@@ -9,7 +9,7 @@
     pkgs = import nixpkgs { inherit system; };
     package = pkgs.rustPlatform.buildRustPackage {
       pname = "nix-pins";
-      version = "0.1.0";
+      version = (fromTOML (builtins.readFile ./crates/cli/Cargo.toml)).package.version;
       # 文档站依赖与本地验证产物不参与 CLI 构建。
       src = pkgs.lib.fileset.toSource {
         root = ./.;
@@ -47,6 +47,13 @@
         mkdir -p $out/share/nix-pins
         cp -R nix $out/share/nix-pins/
       '';
+
+      meta = {
+        description = "Lock Nix package versions";
+        homepage = "https://github.com/ercao/nix-pins";
+        mainProgram = "nix-pins";
+        platforms = [ system ];
+      };
     };
   in {
     packages.${system}.default = package;
