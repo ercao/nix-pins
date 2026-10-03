@@ -1518,17 +1518,43 @@ fn checker_stage_runs_concurrently_before_hashing() {
     let _serial = serial();
     let dir = TempDir::new("checker-concurrency");
     fs::write(dir.0.join("pins-config.nix"), "{ pin }: {}\n").unwrap();
+    // 用同步标记验证任务重叠，避免把 Runner 的进程启动开销当成并发失败。
+    write_executable(
+        &dir.0.join("checker"),
+        r#"#!/bin/sh
+pin=$1
+touch "checker-started-$pin"
+attempt=0
+while [ "$attempt" -lt 100 ]; do
+  set -- checker-started-*
+  [ "$#" -eq 4 ] && break
+  sleep 0.05
+  attempt=$((attempt + 1))
+done
+[ "$#" -eq 4 ] || {
+  printf '%s\n' 'checkers were not concurrent' >&2
+  exit 99
+}
+touch "checker-done-$pin"
+printf '%s\n' v1
+"#,
+    );
     write_executable(
         &dir.0.join("nix"),
         r#"#!/bin/sh
 case "$1" in
   eval)
     case "$*" in
-      *p.check*) printf '%s\n' '{"a":{"cmd":"sleep 0.6; printf v1"},"b":{"cmd":"sleep 0.6; printf v1"},"c":{"cmd":"sleep 0.6; printf v1"},"d":{"cmd":"sleep 0.6; printf v1"}}' ;;
+      *p.check*) printf '%s\n' '{"a":{"cmd":"./checker a"},"b":{"cmd":"./checker b"},"c":{"cmd":"./checker c"},"d":{"cmd":"./checker d"}}' ;;
       *source.fetchSrc.drvPath*) printf '%s\n' '{"a":{"sources":{"default":{"src":"/nix/store/a.drv","fetcher":{"url":{"url":"https://example.invalid/a"}},"derived":{}}}},"b":{"sources":{"default":{"src":"/nix/store/b.drv","fetcher":{"url":{"url":"https://example.invalid/b"}},"derived":{}}}},"c":{"sources":{"default":{"src":"/nix/store/c.drv","fetcher":{"url":{"url":"https://example.invalid/c"}},"derived":{}}}},"d":{"sources":{"default":{"src":"/nix/store/d.drv","fetcher":{"url":{"url":"https://example.invalid/d"}},"derived":{}}}}}' ;;
     esac
     ;;
   build)
+    set -- checker-done-*
+    [ "$#" -eq 4 ] || {
+      printf '%s\n' 'hashing started before all checkers finished' >&2
+      exit 99
+    }
     printf '%s\n' '  got: sha256-source' >&2
     exit 1
     ;;
@@ -1536,15 +1562,9 @@ esac
 "#,
     );
 
-    let started = std::time::Instant::now();
-    let output = run(&dir.0, &["update"]);
-    let elapsed = started.elapsed();
+    let output = run_with_env(&dir.0, &["update"], &[("NIX_PINS_CHECKER_JOBS", "4")]);
 
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(
-        elapsed < std::time::Duration::from_millis(3200),
-        "Checker stage took {elapsed:?}"
-    );
     assert!(String::from_utf8_lossy(&output.stderr).contains("Processed 4 pins; 0 failed"));
 }
 
