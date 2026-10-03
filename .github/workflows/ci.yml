@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Rust checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+      - name: Use locked nixpkgs for tests
+        run: |
+          nixpkgs_path=$(nix eval --impure --raw --expr '(builtins.getFlake ("git+file://" + toString ./.)).inputs.nixpkgs.outPath')
+          echo "NIX_PATH=nixpkgs=$nixpkgs_path" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --all-targets --locked -- --test-threads=1
+
+  build:
+    name: Nix build (${{ matrix.system }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            system: x86_64-linux
+          - os: ubuntu-24.04-arm
+            system: aarch64-linux
+          - os: macos-15
+            system: aarch64-darwin
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+      - name: Build CLI and evaluator
+        run: nix build --no-update-lock-file --print-build-logs
+      - name: Check flake
+        # 当前 Flake 的 checks 复用构建产物；Rust 测试由 checks job 单独执行。
+        run: nix flake check --no-update-lock-file --print-build-logs
+      - name: Check installed package
+        run: |
+          ./result/bin/nix-pins --version
+          ./result/bin/nix-pins --help
+          test -f ./result/share/nix-pins/nix/evaluator.nix
+          test -f ./result/share/nix-pins/nix/pins.nix
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+      - name: Use locked nixpkgs for examples
+        run: |
+          nixpkgs_path=$(nix eval --impure --raw --expr '(builtins.getFlake ("git+file://" + toString ./.)).inputs.nixpkgs.outPath')
+          echo "NIX_PATH=nixpkgs=$nixpkgs_path" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check documentation examples
+        run: pnpm docs:examples
+      - name: Build documentation
+        run: pnpm docs:build
+      - name: Check generated documentation
+        run: pnpm docs:check
