@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  # 被调用的 CI 使用调用方的 workflow 名称，避免与其并发组相同。
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Check release version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Match tag to package version
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+
+          with open("crates/cli/Cargo.toml", "rb") as manifest:
+              version = tomllib.load(manifest)["package"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"]
+          if tag != f"v{version}":
+              raise SystemExit(f"Expected tag v{version}, got {tag}")
+          PY
+
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Create release draft
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Generate release notes and create draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          args=(--verify-tag --generate-notes --draft)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${args[@]}"
