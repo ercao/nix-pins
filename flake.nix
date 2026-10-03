@@ -16,6 +16,7 @@
         fileset = pkgs.lib.fileset.unions [
           ./Cargo.toml
           ./Cargo.lock
+          ./LICENSE
           ./crates
           ./nix
           ./examples
@@ -51,6 +52,7 @@
       meta = {
         description = "Lock Nix package versions";
         homepage = "https://github.com/ercao/nix-pins";
+        license = pkgs.lib.licenses.mit;
         mainProgram = "nix-pins";
         platforms = [ system ];
       };
