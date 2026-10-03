@@ -5,8 +5,11 @@ export default defineNuxtConfig({
   extends: ['docus'],
   modules: ['@nuxtjs/i18n', '@vercel/analytics', '@vercel/speed-insights'],
   i18n: {
-    defaultLocale: 'zh-CN',
-    locales: [{ code: 'zh-CN', language: 'zh-CN', name: '简体中文' }],
+    defaultLocale: 'en',
+    locales: [
+      { code: 'en', language: 'en', name: 'English' },
+      { code: 'zh-CN', language: 'zh-CN', name: '简体中文' },
+    ],
     detectBrowserLanguage: false,
   },
   site: {
@@ -16,7 +19,7 @@ export default defineNuxtConfig({
   app: {
     baseURL,
     head: {
-      htmlAttrs: { lang: 'zh-CN' },
+      htmlAttrs: { lang: 'en' },
     },
   },
   llms: {
@@ -41,6 +44,11 @@ export default defineNuxtConfig({
     prerender: {
       failOnError: true,
       routes: [
+        '/en/getting-started/installation',
+        '/en/getting-started',
+        '/en/guides',
+        '/en/reference',
+        '/en/troubleshooting',
         '/zh-CN/getting-started/installation',
         '/zh-CN/getting-started',
         '/zh-CN/guides',

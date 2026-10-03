@@ -46,7 +46,7 @@ def main():
             raise SystemExit("未找到可校验的完整 Pin 声明")
         print(f"通过：{count} 个完整 Pin 声明通过当前公开 Nix API 校验")
         if args.live:
-            tutorial = content / "zh-CN/1.getting-started/2.first-pin.md"
+            tutorial = content / "en/1.getting-started/2.first-pin.md"
             config.write_text(blocks(tutorial)[0])
             executable = os.environ.get("NIX_PINS_BIN")
             command = [executable] if executable else ["cargo", "run", "--quiet", "--manifest-path", str(repo / "Cargo.toml"), "--"]

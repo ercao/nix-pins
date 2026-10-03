@@ -1,5 +1,5 @@
 export default defineAppConfig({
-  docus: { locale: 'zh-CN' },
+  docus: { locale: 'en' },
   header: { title: 'nix-pins' },
   github: {
     owner: 'ercao',

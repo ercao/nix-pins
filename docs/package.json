@@ -1,6 +1,6 @@
 {
   "name": "nix-pins-docs",
-  "description": "nix-pins 的中文使用指南与公开 API 参考",
+  "description": "User guides and public API reference for nix-pins",
   "private": true,
   "type": "module",
   "scripts": {
